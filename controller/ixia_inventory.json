@@ -1,0 +1,137 @@
+{
+  "api_helper_host": {
+    "host": "10.83.6.216",
+    "user": "root"
+  },
+  "ixnetwork_api_server": "10.92.233.206",
+  "ports": [
+    {
+      "switch": "san-q5240-01",
+      "switch_interface": "et-0/0/0:0",
+      "ixia_port": "ix020-ares.englab.juniper.net/1",
+      "port_name": "Ethernet - 001",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5240-02",
+      "switch_interface": "et-0/0/1:0",
+      "ixia_port": "ix020-ares.englab.juniper.net/2",
+      "port_name": "Ethernet - 002",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5240-03",
+      "switch_interface": "et-0/0/0:0",
+      "ixia_port": "ix020-ares.englab.juniper.net/3",
+      "port_name": "Ethernet - 003",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5240-03",
+      "switch_interface": "et-0/0/0:1",
+      "ixia_port": "ix020-ares.englab.juniper.net/4",
+      "port_name": "Ethernet - 004",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5240-01",
+      "switch_interface": "et-0/0/0:1",
+      "ixia_port": "ix020-ares.englab.juniper.net/5",
+      "port_name": "Ethernet - 005",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5240-02",
+      "switch_interface": "et-0/0/1:1",
+      "ixia_port": "ix020-ares.englab.juniper.net/6",
+      "port_name": "Ethernet - 006",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5230-01",
+      "switch_interface": "et-0/0/30",
+      "ixia_port": "ix020-ares.englab.juniper.net/7",
+      "port_name": "Ethernet - 007",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5230-01",
+      "switch_interface": "et-0/0/31",
+      "ixia_port": "ix020-ares.englab.juniper.net/8",
+      "port_name": "Ethernet - 008",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5220-01",
+      "switch_interface": "et-0/0/0",
+      "ixia_port": "ix020-ares.englab.juniper.net/9",
+      "port_name": "Ethernet - 009",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5220-01",
+      "switch_interface": "et-0/0/1",
+      "ixia_port": "ix020-ares.englab.juniper.net/10",
+      "port_name": "Ethernet - 010",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5130-01",
+      "switch_interface": "et-0/0/0",
+      "ixia_port": "ix020-ares.englab.juniper.net/11",
+      "port_name": "Ethernet - 011",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5130-01",
+      "switch_interface": "et-0/0/1",
+      "ixia_port": "ix020-ares.englab.juniper.net/12",
+      "port_name": "Ethernet - 012",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5700-03",
+      "switch_interface": "et-6/0/2",
+      "ixia_port": "ix020-ares.englab.juniper.net/13",
+      "port_name": "Ethernet - 013",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5700-03",
+      "switch_interface": "et-6/0/3",
+      "ixia_port": "ix020-ares.englab.juniper.net/14",
+      "port_name": "Ethernet - 014",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5240-15",
+      "switch_interface": "et-0/0/1:0",
+      "ixia_port": "ix020-ares.englab.juniper.net/15",
+      "port_name": "Ethernet - 015",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    },
+    {
+      "switch": "san-q5240-q02",
+      "switch_interface": "et-0/0/1:0",
+      "ixia_port": "ix020-ares.englab.juniper.net/16",
+      "port_name": "Ethernet - 016",
+      "line_speed": "400GE",
+      "expected_link_state": "Link Up"
+    }
+  ]
+}

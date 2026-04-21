@@ -1,0 +1,510 @@
+from __future__ import annotations
+
+import json
+import math
+import os
+import statistics
+from typing import Any, Dict, List, Optional, Tuple
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _safe_int(value: Any, default: Optional[int] = 0) -> Optional[int]:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def _load_json_file(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _get_node_block(report: Dict[str, Any], node: str) -> Optional[Dict[str, Any]]:
+    for item in report.get("nodes", []):
+        if str(item.get("node", "")).lower() == str(node).lower():
+            return item
+    return None
+
+
+def _get_snapshot_timestamp(report: Dict[str, Any]) -> Optional[float]:
+    """
+    Prefer an explicit epoch if available.
+    Fallback: None.
+    """
+    for key in ("captured_epoch", "timestamp_epoch", "generated_epoch"):
+        if key in report:
+            try:
+                return float(report[key])
+            except Exception:
+                pass
+    return None
+
+
+def _find_counter_in_payload(obj: Any, target_leaf: str) -> Optional[int]:
+    """
+    Generic recursive search for a leaf like 'in-octets' in a nested dict/list payload.
+    Returns the first integer-like value found.
+    """
+    if isinstance(obj, dict):
+        if target_leaf in obj:
+            return _safe_int(obj.get(target_leaf), None)
+        for value in obj.values():
+            found = _find_counter_in_payload(value, target_leaf)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_counter_in_payload(item, target_leaf)
+            if found is not None:
+                return found
+    return None
+
+
+def _extract_interface_payloads(node_block: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Try to normalize likely telemetry-monitor output shapes into:
+      { "et-0/0/0:0": <payload>, ... }
+    """
+    results: Dict[str, Any] = {}
+
+    # Common shape 1: records list with path/value pairs
+    records = node_block.get("records", [])
+    for rec in records:
+        path = str(rec.get("path", ""))
+        value = rec.get("value")
+        if "/interfaces/interface[name='" in path:
+            try:
+                prefix = "/interfaces/interface[name='"
+                start = path.index(prefix) + len(prefix)
+                end = path.index("']", start)
+                iface = path[start:end]
+                results[iface] = value
+            except Exception:
+                pass
+        elif "/interfaces/interface[name=" in path:
+            try:
+                prefix = "/interfaces/interface[name="
+                start = path.index(prefix) + len(prefix)
+                end = path.index("]", start)
+                iface = path[start:end].strip("'\"")
+                results[iface] = value
+            except Exception:
+                pass
+
+    # Common shape 2: pre-normalized interfaces
+    interfaces = node_block.get("interfaces")
+    if isinstance(interfaces, dict):
+        for iface, payload in interfaces.items():
+            results.setdefault(str(iface), payload)
+
+    # Common shape 3: interfaces list
+    interfaces_list = node_block.get("interfaces_list", [])
+    for item in interfaces_list:
+        name = item.get("name")
+        if name:
+            results.setdefault(str(name), item)
+
+    return results
+
+
+def extract_interface_counters_from_snapshot(
+    *,
+    snapshot_path: str,
+    node: str,
+) -> Dict[str, Dict[str, Optional[int]]]:
+    """
+    Returns:
+      {
+        "et-0/0/0:0": {
+            "in_octets": 123,
+            "out_octets": 456,
+            "carrier_transitions": 0,
+        },
+        ...
+      }
+    """
+    report = _load_json_file(snapshot_path)
+    node_block = _get_node_block(report, node)
+    if not node_block:
+        return {}
+
+    counters: Dict[str, Dict[str, Optional[int]]] = {}
+
+    def _touch(iface: str) -> Dict[str, Optional[int]]:
+        if iface not in counters:
+            counters[iface] = {
+                "in_octets": None,
+                "out_octets": None,
+                "carrier_transitions": None,
+            }
+        return counters[iface]
+
+    # Preferred path: normalized_records
+    normalized_records = node_block.get("normalized_records", []) or []
+    for rec in normalized_records:
+        if not isinstance(rec, dict):
+            continue
+
+        path = str(rec.get("path", ""))
+        metric = str(rec.get("metric", "") or rec.get("update_path", "")).strip()
+        value = rec.get("value")
+
+        iface = None
+        marker = "/interfaces/interface[name="
+        if marker in path:
+            try:
+                start = path.index(marker) + len(marker)
+                end = path.index("]", start)
+                iface = path[start:end].strip("'\"")
+            except Exception:
+                iface = None
+
+        if not iface:
+            continue
+
+        entry = _touch(iface)
+
+        metric_l = metric.lower()
+        if metric_l == "in-octets":
+            entry["in_octets"] = _safe_int(value, None)
+        elif metric_l == "out-octets":
+            entry["out_octets"] = _safe_int(value, None)
+        elif metric_l == "carrier-transitions":
+            entry["carrier_transitions"] = _safe_int(value, None)
+
+    return counters
+
+def _compute_interval_seconds(
+    older_report: Dict[str, Any],
+    newer_report: Dict[str, Any],
+    default_interval_seconds: int,
+) -> float:
+    t1 = _get_snapshot_timestamp(older_report)
+    t2 = _get_snapshot_timestamp(newer_report)
+    if t1 is not None and t2 is not None and t2 > t1:
+        return float(t2 - t1)
+    return float(default_interval_seconds)
+
+
+def _compute_rate_bps(
+    old_value: Optional[int],
+    new_value: Optional[int],
+    interval_seconds: float,
+) -> Optional[float]:
+    if old_value is None or new_value is None:
+        return None
+    if interval_seconds <= 0:
+        return None
+
+    delta = new_value - old_value
+    if delta < 0:
+        return None
+
+    return (delta * 8.0) / interval_seconds
+
+
+def _summarize_share_skew(shares: Dict[str, float]) -> Dict[str, float]:
+    if not shares:
+        return {
+            "max_share": 0.0,
+            "min_share": 0.0,
+            "spread": 0.0,
+            "stddev": 0.0,
+        }
+
+    values = list(shares.values())
+    return {
+        "max_share": round(max(values), 4),
+        "min_share": round(min(values), 4),
+        "spread": round(max(values) - min(values), 4),
+        "stddev": round(statistics.pstdev(values) if len(values) > 1 else 0.0, 4),
+    }
+
+
+def _dominant_port(shares: Dict[str, float]) -> Optional[str]:
+    if not shares:
+        return None
+    return max(shares, key=shares.get)
+
+
+def _flip_count(sequence: List[str]) -> int:
+    flips = 0
+    for idx in range(1, len(sequence)):
+        if sequence[idx] != sequence[idx - 1]:
+            flips += 1
+    return flips
+
+
+def build_rate_intervals(
+    *,
+    sample_paths: List[str],
+    node: str,
+    interfaces_of_interest: Optional[List[str]] = None,
+    default_interval_seconds: int = 10,
+) -> Dict[str, Any]:
+    """
+    Builds interval-based ingress/egress rates from adjacent snapshots.
+    """
+    if len(sample_paths) < 2:
+        return {
+            "sample_paths": sample_paths,
+            "intervals": [],
+            "interfaces": interfaces_of_interest or [],
+        }
+
+    interfaces_filter = set(interfaces_of_interest or [])
+    intervals: List[Dict[str, Any]] = []
+    all_seen_interfaces: List[str] = []
+
+    loaded_reports = [_load_json_file(path) for path in sample_paths]
+
+    for idx in range(1, len(sample_paths)):
+        prev_path = sample_paths[idx - 1]
+        curr_path = sample_paths[idx]
+        prev_report = loaded_reports[idx - 1]
+        curr_report = loaded_reports[idx]
+
+        prev_counters = extract_interface_counters_from_snapshot(
+            snapshot_path=prev_path,
+            node=node,
+        )
+        curr_counters = extract_interface_counters_from_snapshot(
+            snapshot_path=curr_path,
+            node=node,
+        )
+
+        interval_seconds = _compute_interval_seconds(
+            prev_report,
+            curr_report,
+            default_interval_seconds=default_interval_seconds,
+        )
+
+        candidate_ifaces = sorted(set(prev_counters.keys()) | set(curr_counters.keys()))
+        if interfaces_filter:
+            candidate_ifaces = [x for x in candidate_ifaces if x in interfaces_filter]
+
+        rates_in_bps: Dict[str, float] = {}
+        rates_out_bps: Dict[str, float] = {}
+        carrier_transition_delta: Dict[str, int] = {}
+
+        for iface in candidate_ifaces:
+            prev_item = prev_counters.get(iface, {})
+            curr_item = curr_counters.get(iface, {})
+
+            in_bps = _compute_rate_bps(
+                prev_item.get("in_octets"),
+                curr_item.get("in_octets"),
+                interval_seconds,
+            )
+            out_bps = _compute_rate_bps(
+                prev_item.get("out_octets"),
+                curr_item.get("out_octets"),
+                interval_seconds,
+            )
+
+            prev_carrier = _safe_int(prev_item.get("carrier_transitions"), 0) or 0
+            curr_carrier = _safe_int(curr_item.get("carrier_transitions"), 0) or 0
+            delta_carrier = max(0, curr_carrier - prev_carrier)
+
+            if in_bps is not None:
+                rates_in_bps[iface] = round(in_bps, 2)
+            if out_bps is not None:
+                rates_out_bps[iface] = round(out_bps, 2)
+            carrier_transition_delta[iface] = delta_carrier
+
+            if iface not in all_seen_interfaces:
+                all_seen_interfaces.append(iface)
+
+        total_in_bps = sum(rates_in_bps.values())
+        shares: Dict[str, float] = {}
+        if total_in_bps > 0:
+            for iface, rate in rates_in_bps.items():
+                shares[iface] = round(rate / total_in_bps, 4)
+
+        interval_entry = {
+            "from_sample": os.path.basename(prev_path),
+            "to_sample": os.path.basename(curr_path),
+            "interval_seconds": round(interval_seconds, 3),
+            "rates_in_bps": rates_in_bps,
+            "rates_out_bps": rates_out_bps,
+            "shares": shares,
+            "carrier_transition_delta": carrier_transition_delta,
+            "skew": _summarize_share_skew(shares),
+            "dominant_port": _dominant_port(shares),
+            "total_in_bps": round(total_in_bps, 2),
+        }
+        intervals.append(interval_entry)
+
+    dominant_sequence = [
+        item["dominant_port"]
+        for item in intervals
+        if item.get("dominant_port")
+    ]
+
+    return {
+        "sample_paths": sample_paths,
+        "interfaces": all_seen_interfaces,
+        "intervals": intervals,
+        "dominant_port_sequence": dominant_sequence,
+        "dominant_port_flips": _flip_count(dominant_sequence),
+    }
+
+
+def summarize_window(window_report: Dict[str, Any]) -> Dict[str, Any]:
+    intervals = window_report.get("intervals", [])
+    if not intervals:
+        return {
+            "avg_spread": 0.0,
+            "avg_stddev": 0.0,
+            "avg_total_in_bps": 0.0,
+            "dominant_port_sequence": [],
+            "dominant_port_flips": 0,
+            "mean_share_by_port": {},
+        }
+
+    avg_spread = statistics.mean(
+        _safe_float(item.get("skew", {}).get("spread"), 0.0) for item in intervals
+    )
+    avg_stddev = statistics.mean(
+        _safe_float(item.get("skew", {}).get("stddev"), 0.0) for item in intervals
+    )
+    avg_total_in_bps = statistics.mean(
+        _safe_float(item.get("total_in_bps"), 0.0) for item in intervals
+    )
+
+    port_share_values: Dict[str, List[float]] = {}
+    for item in intervals:
+        for iface, share in item.get("shares", {}).items():
+            port_share_values.setdefault(iface, []).append(_safe_float(share, 0.0))
+
+    mean_share_by_port = {
+        iface: round(statistics.mean(values), 4)
+        for iface, values in port_share_values.items()
+        if values
+    }
+
+    return {
+        "avg_spread": round(avg_spread, 4),
+        "avg_stddev": round(avg_stddev, 4),
+        "avg_total_in_bps": round(avg_total_in_bps, 2),
+        "dominant_port_sequence": window_report.get("dominant_port_sequence", []),
+        "dominant_port_flips": window_report.get("dominant_port_flips", 0),
+        "mean_share_by_port": mean_share_by_port,
+    }
+
+
+def classify_ecmp_behavior(
+    *,
+    baseline_summary: Dict[str, Any],
+    recovery_summary: Dict[str, Any],
+    q8_taildrop_growth: Optional[float] = None,
+) -> Dict[str, Any]:
+    base_spread = _safe_float(baseline_summary.get("avg_spread"), 0.0)
+    rec_spread = _safe_float(recovery_summary.get("avg_spread"), 0.0)
+    spread_delta = rec_spread - base_spread
+
+    rec_flips = int(recovery_summary.get("dominant_port_flips", 0))
+    classification = "balanced_recovery"
+    reason = "recovery traffic distribution looks stable"
+    confidence = "medium"
+
+    if rec_spread >= 0.35 and spread_delta >= 0.15:
+        classification = "persistent_skew_after_recovery"
+        reason = "post-recovery ECMP traffic share remains materially more imbalanced than baseline"
+        confidence = "high"
+    elif rec_flips >= 2:
+        classification = "ecmp_toggling_after_recovery"
+        reason = "dominant ECMP member flips repeatedly across recovery intervals"
+        confidence = "high"
+    elif rec_spread >= 0.25:
+        classification = "mild_skew_after_recovery"
+        reason = "post-recovery traffic distribution is somewhat imbalanced"
+        confidence = "medium"
+
+    if q8_taildrop_growth is not None and q8_taildrop_growth > 0:
+        if classification in ("persistent_skew_after_recovery", "ecmp_toggling_after_recovery", "mild_skew_after_recovery"):
+            reason += "; this aligns with continued q8 taildrop growth"
+        else:
+            classification = "taildrop_growth_without_strong_ecmp_signal"
+            reason = "q8 taildrop grows, but ECMP skew/toggling signal is weak"
+            confidence = "medium"
+
+    return {
+        "classification": classification,
+        "reason": reason,
+        "confidence": confidence,
+        "baseline_avg_spread": round(base_spread, 4),
+        "recovery_avg_spread": round(rec_spread, 4),
+        "spread_delta": round(spread_delta, 4),
+        "recovery_dominant_port_flips": rec_flips,
+        "q8_taildrop_growth": q8_taildrop_growth,
+    }
+
+
+def build_ecmp_recovery_report(
+    *,
+    run_id: str,
+    node: str,
+    bounced_interface: str,
+    ecmp_pre_sample_paths: List[str],
+    ecmp_recovery_sample_paths: List[str],
+    interfaces_of_interest: Optional[List[str]] = None,
+    q8_taildrop_growth: Optional[float] = None,
+    default_interval_seconds: int = 10,
+) -> Dict[str, Any]:
+    baseline_window = build_rate_intervals(
+        sample_paths=ecmp_pre_sample_paths,
+        node=node,
+        interfaces_of_interest=interfaces_of_interest,
+        default_interval_seconds=default_interval_seconds,
+    )
+
+    recovery_window = build_rate_intervals(
+        sample_paths=ecmp_recovery_sample_paths,
+        node=node,
+        interfaces_of_interest=interfaces_of_interest,
+        default_interval_seconds=default_interval_seconds,
+    )
+
+    baseline_summary = summarize_window(baseline_window)
+    recovery_summary = summarize_window(recovery_window)
+
+    classification = classify_ecmp_behavior(
+        baseline_summary=baseline_summary,
+        recovery_summary=recovery_summary,
+        q8_taildrop_growth=q8_taildrop_growth,
+    )
+
+    return {
+        "run_id": run_id,
+        "node": node,
+        "bounced_interface": bounced_interface,
+        "interfaces_of_interest": interfaces_of_interest or recovery_window.get("interfaces", []),
+        "baseline_window": baseline_window,
+        "recovery_window": recovery_window,
+        "baseline_summary": baseline_summary,
+        "recovery_summary": recovery_summary,
+        "analysis": classification,
+    }
+
+
+def write_ecmp_recovery_report(
+    *,
+    out_path: str,
+    report: Dict[str, Any],
+) -> str:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2, sort_keys=False)
+    return out_path

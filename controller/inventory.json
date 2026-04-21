@@ -1,0 +1,76 @@
+{
+  "nodes": [
+    {
+      "device": "san-q5240-01",
+      "alias": "leaf1",
+      "serial": "AN45056950",
+      "mgt_ip": "10.83.6.3",
+      "role": "Leaf1",
+      "grpc": 60063
+    },
+    {
+      "device": "san-q5240-02",
+      "alias": "leaf2",
+      "serial": "AN25047159",
+      "mgt_ip": "10.83.6.4",
+      "role": "Leaf2",
+      "grpc": 60064
+    },
+    {
+      "device": "san-q5240-03",
+      "alias": "leaf3",
+      "serial": "AO10026040",
+      "mgt_ip": "10.83.6.30",
+      "role": "Leaf3",
+      "grpc": 60065
+    },
+    {
+      "device": "san-q5240-15",
+      "alias": "spine1",
+      "serial": "AO10026046",
+      "mgt_ip": "10.83.6.28",
+      "role": "Spine1",
+      "grpc": 60061
+    },
+    {
+      "device": "san-q5240-q02",
+      "alias": "spine2",
+      "serial": "AO34053918",
+      "mgt_ip": "10.83.6.5",
+      "role": "Spine2",
+      "grpc": 60062
+    },
+    {
+      "device": "san-q5230-01",
+      "alias": "leaf4",
+      "serial": "FU1923AN0019",
+      "mgt_ip": "10.83.6.25",
+      "role": "Leaf4",
+      "grpc": 60066
+    },
+    {
+      "device": "san-q5220-01",
+      "alias": "leaf5",
+      "serial": "XC4824440561",
+      "mgt_ip": "10.83.6.32",
+      "role": "Leaf5",
+      "grpc": 60069
+    },
+    {
+      "device": "san-q5130-01",
+      "alias": "leaf6",
+      "serial": "YR0220130024",
+      "mgt_ip": "10.83.6.21",
+      "role": "Leaf6",
+      "grpc": 60067
+    },
+    {
+      "device": "san-q5700-03",
+      "alias": "leaf7",
+      "serial": "JN5EFD222JHA",
+      "mgt_ip": "10.83.6.9",
+      "role": "Leaf7",
+      "grpc": 60068
+    }
+  ]
+}

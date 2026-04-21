@@ -1,0 +1,19 @@
+==== DATE ====
+Sat Mar  7 02:32:40 PM UTC 2026
+==== HOST ====
+san-jvision-01
+10.83.6.47 172.18.0.1 172.20.0.1 172.21.0.1 172.19.0.1 172.22.0.1 172.17.0.1 172.23.0.1 2620:103:c003:a7a2:5a47:caff:fe7b:7502 
+==== CPU ====
+20
+==== MEMORY ====
+               total        used        free      shared  buff/cache   available
+Mem:            31Gi       615Mi        27Gi       1.0Mi       2.7Gi        30Gi
+Swap:          8.0Gi          0B       8.0Gi
+==== DISK ====
+Filesystem                         Size  Used Avail Use% Mounted on
+/dev/mapper/ubuntu--vg-ubuntu--lv   98G   37G   57G  40% /
+==== OS ====
+Linux san-jvision-01 5.15.0-170-generic #180-Ubuntu SMP Fri Jan 9 16:10:31 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+==== PYTHON ====
+Python 3.10.12
+pip 26.0.1 from /root/fabric-controller/.venv/lib/python3.10/site-packages/pip (python 3.10)

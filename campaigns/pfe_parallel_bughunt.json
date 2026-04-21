@@ -1,0 +1,61 @@
+{
+  "campaign_name": "pfe_parallel_bughunt",
+  "description": "Parallel BGP clear and interface bounce with validation after each iteration",
+  "baseline_precheck": true,
+  "iterations": 5,
+  "interval_seconds": 5,
+  "stop_on_failure": true,
+  "defaults": {
+    "settle_seconds": 20,
+    "parallel": 3
+  },
+  "phases": [
+    {
+      "name": "parallel_bgp_recovery",
+      "type": "parallel",
+      "events": [
+        {
+          "event_type": "bgp_clear",
+          "node": "leaf1"
+        },
+        {
+          "event_type": "bgp_clear",
+          "node": "leaf2"
+        },
+        {
+          "event_type": "bgp_clear",
+          "node": "leaf3"
+        }
+      ]
+    },
+    {
+      "name": "validate_after_bgp",
+      "type": "validate"
+    },
+    {
+      "name": "parallel_interface_churn",
+      "type": "parallel",
+      "events": [
+        {
+          "event_type": "interface_bounce",
+          "node": "leaf1",
+          "interface": "et-0/0/11:0"
+        },
+        {
+          "event_type": "interface_bounce",
+          "node": "leaf2",
+          "interface": "et-0/0/11:0"
+        },
+        {
+          "event_type": "interface_bounce",
+          "node": "leaf3",
+          "interface": "et-0/0/11:0"
+        }
+      ]
+    },
+    {
+      "name": "validate_after_interface",
+      "type": "validate"
+    }
+  ]
+}

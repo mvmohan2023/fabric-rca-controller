@@ -1,0 +1,106 @@
+{
+  "profiles": {
+    "fec_only": {
+      "description": "Collect FEC-related telemetry from native interface-root state telemetry",
+      "paths": [
+        "/state/interfaces/interface[name={interface}]/"
+      ]
+    },
+    "optics_only": {
+      "description": "Collect Junos native optics telemetry",
+      "paths": [
+        "/junos/system/linecard/optics/"
+      ]
+    },
+    "qmon_only": {
+      "description": "Collect Junos native qmon software telemetry for queue and buffer usage analysis",
+      "paths": [
+        "/junos/system/linecard/qmon-sw"
+      ]
+    },
+    "interface_basic": {
+      "description": "Collect supported basic interface operational and traffic counters for resolved interfaces",
+      "paths": [
+        "/interfaces/interface[name={interface}]/state/oper-status",
+        "/interfaces/interface[name={interface}]/state/counters/carrier-transitions",
+        "/interfaces/interface[name={interface}]/state/counters/in-octets",
+        "/interfaces/interface[name={interface}]/state/counters/out-octets",
+        "/interfaces/interface[name={interface}]/state/counters/in-errors"
+      ]
+    },
+    "interface_fec_and_basic": {
+      "description": "Collect supported OpenConfig basic interface counters together with native interface-root telemetry for FEC extraction",
+      "paths": [
+        "/interfaces/interface[name={interface}]/state/oper-status",
+        "/interfaces/interface[name={interface}]/state/counters/carrier-transitions",
+        "/interfaces/interface[name={interface}]/state/counters/in-octets",
+        "/interfaces/interface[name={interface}]/state/counters/out-octets",
+        "/interfaces/interface[name={interface}]/state/counters/in-errors",
+        "/state/interfaces/interface[name={interface}]/"
+      ]
+    },
+    "interface_and_optics": {
+      "description": "Collect supported interface operational counters together with optics telemetry",
+      "paths": [
+        "/interfaces/interface[name={interface}]/state/oper-status",
+        "/interfaces/interface[name={interface}]/state/counters/carrier-transitions",
+        "/interfaces/interface[name={interface}]/state/counters/in-octets",
+        "/interfaces/interface[name={interface}]/state/counters/out-octets",
+        "/interfaces/interface[name={interface}]/state/counters/in-errors",
+        "/junos/system/linecard/optics/"
+      ]
+    },
+    "full_interface_health": {
+      "description": "Collect supported OpenConfig interface counters with native interface-root state, qmon, and optics telemetry for health validation",
+      "paths": [
+        "/interfaces/interface[name={interface}]/state/oper-status",
+        "/interfaces/interface[name={interface}]/state/counters/carrier-transitions",
+        "/interfaces/interface[name={interface}]/state/counters/in-octets",
+        "/interfaces/interface[name={interface}]/state/counters/out-octets",
+        "/interfaces/interface[name={interface}]/state/counters/in-errors",
+        "/state/interfaces/interface[name={interface}]/",
+        "/junos/system/linecard/qmon-sw",
+        "/junos/system/linecard/optics/"
+      ]
+    },
+    "interface_deep_inspect": {
+      "description": "Collect native interface-root state telemetry for deep congestion, FEC, ECN, drop, and PFC inspection",
+      "paths": [
+        "/state/interfaces/interface[name={interface}]/"
+      ]
+    },
+    "hotspot_congestion_qmon": {
+      "description": "Collect hotspot-focused native interface-root telemetry, qmon queue telemetry, and optics telemetry",
+      "paths": [
+        "/state/interfaces/interface[name={interface}]/",
+        "/junos/system/linecard/qmon-sw",
+        "/junos/system/linecard/optics/",
+        "/interfaces/interface[name={interface}]/state/counters/in-discards",
+        "/interfaces/interface[name={interface}]/state/counters/in-errors",
+        "/interfaces/interface[name={interface}]/state/counters/out-discards",
+        "/interfaces/interface[name={interface}]/state/counters/out-errors",
+        "/interfaces/interface[name={interface}]/state/counters/in-pause-pkts"
+      ]
+    },
+    "deep_congestion_full": {
+      "description": "Collect supported OpenConfig interface counters with native interface-root, qmon, and optics correlation for hotspot root-cause analysis",
+      "paths": [
+        "/interfaces/interface[name={interface}]/state/oper-status",
+        "/interfaces/interface[name={interface}]/state/counters/in-octets",
+        "/interfaces/interface[name={interface}]/state/counters/out-octets",
+        "/interfaces/interface[name={interface}]/state/counters/in-errors",
+        "/state/interfaces/interface[name={interface}]/",
+        "/junos/system/linecard/qmon-sw",
+        "/junos/system/linecard/optics/"
+      ]
+    },
+   "hotspot_congestion_qmon_phase": {
+     "description": "Lightweight qmon-only telemetry for phase-aware RCA sampling (pre/recover windows)",
+     "paths": [
+       "/junos/system/linecard/qmon-sw",
+       "/interfaces/interface[name={interface}]/state/counters/in-octets",
+       "/interfaces/interface[name={interface}]/state/counters/out-octets"
+     ]
+   }
+  }
+}

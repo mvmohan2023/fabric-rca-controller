@@ -1,0 +1,25 @@
+{
+  "events": [
+    {
+      "name": "traffic_stop",
+      "type": "ixia",
+      "action": "traffic_stop",
+      "settle": 3
+    },
+    {
+      "name": "traffic_start",
+      "type": "ixia",
+      "action": "traffic_start",
+      "settle": 5
+    },
+    {
+      "name": "link_flap_q5700_14",
+      "type": "fabric",
+      "action": "link_flap",
+      "device": "san-q5700-03",
+      "interface": "et-6/0/3",
+      "duration": 5,
+      "settle": 15
+    }
+  ]
+}

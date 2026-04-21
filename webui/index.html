@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fabric RCA UI</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260420c" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>Fabric RCA</h2>
+        <p>Bug-hunting and root cause dashboard</p>
+      </div>
+
+      <div class="sidebar-block">
+        <label for="runSelect">Select Run</label>
+        <select id="runSelect"></select>
+      </div>
+
+      <div class="sidebar-block">
+        <label for="searchInput">Search Entity</label>
+        <input id="searchInput" type="text" placeholder="leaf1, spine1, q7..." />
+      </div>
+
+      <div class="sidebar-block">
+        <div class="mini-title">Entities</div>
+        <div id="entityList" class="entity-list"></div>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="hero">
+        <div class="hero-main">
+          <div class="eyebrow">Fabric RCA Visualization</div>
+          <h1 id="heroTitle">Loading RCA case...</h1>
+          <p id="heroSub">Run summary</p>
+        </div>
+        <div class="hero-badges">
+          <a
+            id="topologyViewLink"
+            class="badge badge-neutral"
+            href="#"
+            target="_blank"
+            rel="noopener noreferrer"
+            style="text-decoration:none;"
+          >
+            Open Topology View
+          </a>
+          <span id="badgeSeverity" class="badge">Severity</span>
+          <span id="badgeConfidence" class="badge">Confidence</span>
+        </div>
+      </header>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>RCA Verdict</h3>
+          </div>
+          <div id="summaryBlock" class="summary-block"></div>
+        </div>
+      </section>
+
+      <section class="card-grid stats-grid">
+        <div class="card stat-card">
+          <div class="stat-label">Primary Cause</div>
+          <div id="statCause" class="stat-value">-</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-label">Confidence</div>
+          <div id="statConfidence" class="stat-value">-</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-label">Top Queue Score</div>
+          <div id="statTopScore" class="stat-value">-</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-label">Total Queue Hotspots Detected</div>
+          <div id="statTotalHotspots" class="stat-value">-</div>
+        </div>
+      </section>
+
+      <section class="content-grid two-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Triggered Events</h3>
+          </div>
+          <div id="eventsBlock" class="stack-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Top 3 Hotspots</h3>
+          </div>
+          <div id="hotspotsTable" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>RCA Executive Summary</h3>
+          </div>
+          <div id="rcaSummaryBlock" class="evidence-block"></div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Selected Entity Evidence</h3>
+          </div>
+          <div id="selectedEntityHint" class="panel-hint"></div>
+          <div id="evidenceBlock" class="evidence-block"></div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Top CoS-Correlated Hotspots</h3>
+          </div>
+          <div id="cosHotspotsTable" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>RCA Narrative</h3>
+          </div>
+
+          <div class="narrative-section">
+            <h4 class="subsection-title">Queue RCA Summary</h4>
+            <div id="queueRcaSummaryBlock" class="summary-block"></div>
+          </div>
+
+          <div class="narrative-section">
+            <h4 class="subsection-title">RCA Interpretation</h4>
+            <div id="rcaNarrativeBlock" class="summary-block"></div>
+          </div>
+
+          <div class="narrative-section">
+            <h4 class="subsection-title">Hotspot Interpretation</h4>
+            <div id="hotspotInterpretationBlock" class="summary-block"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>ECMP Recovery Health</h3>
+          </div>
+
+          <div id="ecmpRecoverySummary" class="summary-block"></div>
+          <div id="ecmpRecoveryVerdict" class="summary-block"></div>
+
+          <div style="margin-top: 12px;">
+            <button id="toggleEcmpDetails" class="btn-secondary">
+              Show ECMP Recovery Details
+            </button>
+          </div>
+
+          <div id="ecmpRecoveryDetails" class="hidden" style="margin-top: 16px;">
+            <div id="ecmpRecoveryTable" class="table-wrap"></div>
+            <div id="ecmpRecoveryDetailPanel" class="evidence-block" style="margin-top: 16px;"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Existing raw / legacy traffic card retained -->
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Traffic / IXIA / RoCE Health</h3>
+          </div>
+          <div id="trafficHealthBlock" class="summary-block"></div>
+        </div>
+      </section>
+
+      <!-- New cleaned-up traffic / IXIA / RoCEv2 RCA-friendly sections -->
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Traffic / IXIA / RoCEv2 Executive Summary</h3>
+          </div>
+          <div id="trafficExecSummaryBlock" class="evidence-block"></div>
+        </div>
+      </section>
+      
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Congestion Origin Analysis</h3>
+          </div>
+          <div id="congestionOriginAnalysisBlock" class="evidence-block"></div>
+        </div>
+      </section>
+      <section class="content-grid two-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Top Impacted Fabric Interfaces (Traffic View)</h3>
+          </div>
+          <div id="worstRxPortsBlock" class="evidence-block"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Traffic Recovery Interpretation</h3>
+          </div>
+          <div id="trafficRecoveryBlock" class="evidence-block"></div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Top RoCEv2 Flows by SeqError</h3>
+          </div>
+          <div id="roceSeqerrorFlowsBlock" class="evidence-block"></div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Top RoCEv2 Flows by Post SeqError Increase</h3>
+          </div>
+          <div id="rocePostSeqerrorFlowsBlock" class="evidence-block"></div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Fabric Correlation Summary</h3>
+          </div>
+          <div id="trafficFabricCorrelationBlock" class="evidence-block"></div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Interface Drop / Error Health</h3>
+          </div>
+          <div id="interfaceDropHealthBlock" class="summary-block"></div>
+        </div>
+      </section>
+
+      <section class="content-grid two-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Severity Distribution</h3>
+          </div>
+          <div id="severityBlock" class="stack-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Next Investigation Steps</h3>
+          </div>
+          <div id="factorsBlock" class="stack-list"></div>
+        </div>
+      </section>
+
+      <section class="content-grid single-col">
+        <div class="card">
+          <div class="card-header">
+            <h3>Run Metadata</h3>
+          </div>
+          <div id="metadataBlock" class="kv-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js?v=20260420c"></script>
+</body>
+</html>

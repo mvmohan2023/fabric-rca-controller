@@ -1,0 +1,396 @@
+{
+  "profiles": {
+    "fec_only": [
+      {
+        "name": "fec_corrected_codewords",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/corrected-codewords",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "counters/fec-corrected-words",
+        "status": "validated"
+      },
+      {
+        "name": "fec_uncorrectable_codewords",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/uncorrected-codewords",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "counters/fec-uncorrectable-words",
+        "status": "validated"
+      },
+      {
+        "name": "pre_fec_ber",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/pre-fec-ber",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "pre-fec-ber",
+        "status": "validated"
+      },
+      {
+        "name": "fec_mode",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/fec-mode",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "fec-mode",
+        "status": "validated"
+      }
+    ],
+    "interface_counters_basic": [
+      {
+        "name": "ipv4_in_pkts",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv4/state/counters/in-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv4/in-pkts",
+        "status": "validated"
+      },
+      {
+        "name": "ipv4_in_bytes",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv4/state/counters/in-octets",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv4/in-bytes",
+        "status": "validated"
+      },
+      {
+        "name": "ipv4_out_pkts",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv4/state/counters/out-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv4/out-pkts",
+        "status": "validated"
+      },
+      {
+        "name": "ipv4_out_bytes",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv4/state/counters/out-octets",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv4/out-bytes",
+        "status": "validated"
+      },
+      {
+        "name": "ipv6_in_pkts",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv6/state/counters/in-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv6/in-pkts",
+        "status": "validated"
+      },
+      {
+        "name": "ipv6_in_bytes",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv6/state/counters/in-octets",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv6/in-bytes",
+        "status": "validated"
+      },
+      {
+        "name": "ipv6_out_pkts",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv6/state/counters/out-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv6/out-pkts",
+        "status": "validated"
+      },
+      {
+        "name": "ipv6_out_bytes",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv6/state/counters/out-octets",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv6/out-bytes",
+        "status": "validated"
+      }
+    ],
+    "interface_error_signals": [
+      {
+        "name": "in_resource_drops",
+        "oc_path": "/interfaces/interface/state/counters/in-discards",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "errors/in-resource-drops",
+        "status": "validated_platform_specific"
+      },
+      {
+        "name": "out_ecn_ce_marked_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/dropped-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "errors/out-ecn-ce-marked-pkts",
+        "status": "validated_platform_specific"
+      }
+    ],
+    "pfc_signals": [
+      {
+        "name": "pfc_priority_0_in_pkts",
+        "oc_path": "/interfaces/interface/ethernet/state/counters/in-mac-pause-frames",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "pfc[priority=0]/in-pkts",
+        "status": "validated_platform_specific"
+      },
+      {
+        "name": "pfc_priority_0_out_pkts",
+        "oc_path": "/interfaces/interface/ethernet/state/counters/out-mac-pause-frames",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "pfc[priority=0]/out-pkts",
+        "status": "validated_platform_specific"
+      }
+    ],
+    "interface_recovery": [
+      {
+        "name": "fec_corrected_codewords",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/corrected-codewords",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "counters/fec-corrected-words",
+        "status": "validated"
+      },
+      {
+        "name": "fec_uncorrectable_codewords",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/uncorrected-codewords",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "counters/fec-uncorrectable-words",
+        "status": "validated"
+      },
+      {
+        "name": "pre_fec_ber",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/pre-fec-ber",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "pre-fec-ber",
+        "status": "validated"
+      },
+      {
+        "name": "fec_mode",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/fec-mode",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "fec-mode",
+        "status": "validated"
+      },
+      {
+        "name": "in_resource_drops",
+        "oc_path": "/interfaces/interface/state/counters/in-discards",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "errors/in-resource-drops",
+        "status": "validated_platform_specific"
+      },
+      {
+        "name": "out_ecn_ce_marked_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/dropped-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "errors/out-ecn-ce-marked-pkts",
+        "status": "validated_platform_specific"
+      }
+    ],
+    "traffic_health": [
+      {
+        "name": "ipv4_in_pkts",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv4/state/counters/in-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv4/in-pkts",
+        "status": "validated"
+      },
+      {
+        "name": "ipv4_out_pkts",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv4/state/counters/out-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv4/out-pkts",
+        "status": "validated"
+      },
+      {
+        "name": "ipv6_in_pkts",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv6/state/counters/in-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv6/in-pkts",
+        "status": "validated"
+      },
+      {
+        "name": "ipv6_out_pkts",
+        "oc_path": "/interfaces/interface/subinterfaces/subinterface/ipv6/state/counters/out-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "ipv6/out-pkts",
+        "status": "validated"
+      },
+      {
+        "name": "in_resource_drops",
+        "oc_path": "/interfaces/interface/state/counters/in-discards",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "errors/in-resource-drops",
+        "status": "validated_platform_specific"
+      },
+      {
+        "name": "out_ecn_ce_marked_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/dropped-pkts",
+        "subscription_path": "/state/interfaces/interface/counters",
+        "extract_path": "errors/out-ecn-ce-marked-pkts",
+        "status": "validated_platform_specific"
+      }
+    ],
+    "qmon_queue_health": [
+      {
+        "name": "queue_tx_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/transmit-pkts",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "txPkts",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_tx_bytes",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/transmit-octets",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "txBytes",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_tail_drop_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/dropped-pkts",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "tailDropPkts",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_tail_drop_bytes",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/dropped-octets",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "tailDropBytes",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_red_drop_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/red-drop-pkts",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "redDropPkts",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_ecn_marked_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/ecn-marked-pkts",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "ecnMarkedPkts",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_ecn_marked_bytes",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/ecn-marked-octets",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "ecnMarkedBytes",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_peak_buffer_occupancy",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/peak-buffer-occupancy",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "peakBufferOccupancy",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_peak_buffer_occupancy_percent",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/peak-buffer-occupancy-percent",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "peakBufferOccupancyPercent",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      }
+    ],
+    "qmon_priority_group_health": [
+      {
+        "name": "pg_peak_buffer_occupancy",
+        "oc_path": "/qos/interfaces/interface/input/priority-groups/priority-group/state/peak-buffer-occupancy",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "peakBufferOccupancy",
+        "scope": "priority-group",
+        "status": "validated_junos_qmon"
+      }
+    ],
+    "pfe_bug_hunt": [
+      {
+        "name": "fec_corrected_codewords",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/corrected-codewords",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "counters/fec-corrected-words",
+        "status": "validated"
+      },
+      {
+        "name": "fec_uncorrectable_codewords",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/uncorrected-codewords",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "counters/fec-uncorrectable-words",
+        "status": "validated"
+      },
+      {
+        "name": "pre_fec_ber",
+        "oc_path": "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/pre-fec-ber",
+        "subscription_path": "/state/interfaces/interface",
+        "extract_path": "pre-fec-ber",
+        "status": "validated"
+      },
+      {
+        "name": "queue_tail_drop_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/dropped-pkts",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "tailDropPkts",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_red_drop_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/red-drop-pkts",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "redDropPkts",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_ecn_marked_pkts",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/ecn-marked-pkts",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "ecnMarkedPkts",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "queue_peak_buffer_occupancy",
+        "oc_path": "/qos/interfaces/interface/output/queues/queue/state/peak-buffer-occupancy",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "peakBufferOccupancy",
+        "scope": "queue",
+        "status": "validated_junos_qmon"
+      },
+      {
+        "name": "pg_peak_buffer_occupancy",
+        "oc_path": "/qos/interfaces/interface/input/priority-groups/priority-group/state/peak-buffer-occupancy",
+        "subscription_path": "/junos/system/linecard/qmon-sw",
+        "extract_path": "peakBufferOccupancy",
+        "scope": "priority-group",
+        "status": "validated_junos_qmon"
+      }
+    ],
+    "discovery_todo": [
+      {
+        "name": "carrier_transitions",
+        "oc_path": "/interfaces/interface/state/counters/carrier-transitions",
+        "subscription_path": "",
+        "extract_path": "",
+        "status": "not_found_yet"
+      },
+      {
+        "name": "in_crc_errors",
+        "oc_path": "/interfaces/interface/ethernet/state/counters/in-crc-errors",
+        "subscription_path": "",
+        "extract_path": "",
+        "status": "not_found_yet"
+      },
+      {
+        "name": "in_undersize_frames",
+        "oc_path": "/interfaces/interface/ethernet/state/counters/in-undersize-frames",
+        "subscription_path": "",
+        "extract_path": "",
+        "status": "not_found_yet"
+      },
+      {
+        "name": "bgp_session_state",
+        "oc_path": "/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/state/session-state",
+        "subscription_path": "",
+        "extract_path": "",
+        "status": "not_found_yet"
+      },
+      {
+        "name": "bgp_established_transitions",
+        "oc_path": "/network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/state/established-transitions",
+        "subscription_path": "",
+        "extract_path": "",
+        "status": "not_found_yet"
+      }
+    ]
+  }
+}

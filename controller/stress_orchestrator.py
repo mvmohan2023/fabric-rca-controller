@@ -1,0 +1,1534 @@
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
+
+import paramiko
+
+from controller.config_loader import load_inventory
+from typing import Any, Dict, List, Optional
+
+# Reuse existing RCA helpers instead of re-implementing telemetry logic
+from controller.run_rca_case import (
+    IxiaClient,
+    collect_snapshot,
+    telemetry_json_path,
+    evaluate_pre_event_cleanliness,
+)
+
+BASE_DIR = Path("/root/fabric-controller")
+ARTIFACTS_DIR = BASE_DIR / "artifacts"
+OUTPUT_DIR = ARTIFACTS_DIR / "orchestrator"
+INVENTORY_FILE = BASE_DIR / "inventory" / "inventory.active.yaml"
+
+TOPOLOGY_FILE = ARTIFACTS_DIR / "topology" / "discovered_topology.json"
+VALIDATION_JSON = ARTIFACTS_DIR / "validation" / "fabric_validation_report.json"
+VALIDATION_TXT = ARTIFACTS_DIR / "validation" / "fabric_validation_report.txt"
+PRECHECK_JSON = ARTIFACTS_DIR / "precheck" / "stress_precheck_report.json"
+PRECHECK_TXT = ARTIFACTS_DIR / "precheck" / "stress_precheck_report.txt"
+
+
+def ensure_dir(path: Path):
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def default_run_id():
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def first_non_empty(*values):
+    for value in values:
+        if value not in (None, "", {}):
+            return value
+    return None
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="AI-DC Stress & Validation Controller - Stress Orchestrator"
+    )
+    parser.add_argument(
+        "--mode",
+        default="noop",
+        choices=["noop", "interface_bounce", "bgp_clear"],
+        help="Stress mode to execute.",
+    )
+    parser.add_argument(
+        "--settle-seconds",
+        type=int,
+        default=10,
+        help="Seconds to wait after stress action before validation.",
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=int,
+        default=0,
+        help="Seconds to wait between iterations.",
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=1,
+        help="Number of stress iterations to execute.",
+    )
+    parser.add_argument(
+        "--stop-on-failure",
+        action="store_true",
+        help="Stop the loop immediately when an iteration fails.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional run identifier. Default is timestamp-based.",
+    )
+    parser.add_argument(
+        "--node",
+        default=None,
+        help="Single target node name from inventory.",
+    )
+    parser.add_argument(
+        "--interface",
+        default=None,
+        help="Single target interface, used with interface_bounce mode.",
+    )
+    parser.add_argument(
+        "--targets",
+        default=None,
+        help=(
+            "Comma-separated targets for parallel execution. "
+            "For bgp_clear: leaf1,leaf2,leaf3 "
+            "For interface_bounce use node|interface format: "
+            "leaf1|et-0/0/11:0,leaf2|et-0/0/11:0"
+        ),
+    )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help="Maximum number of parallel stress worker threads.",
+    )
+    parser.add_argument(
+        "--stress-orchestrator-report",
+        help="Optional path to stress_orchestrator_report.json for trigger/event correlation",
+    )
+
+    parser.add_argument(
+        "--pre-event-stabilize-seconds",
+        type=int,
+        default=10,
+        help="Seconds to wait after precheck passes before confirming clean baseline and injecting stress.",
+    )
+    parser.add_argument(
+        "--strict-pre-event-gate",
+        action="store_true",
+        help="Fail the run if pre-event confirmation detects pre-existing instability.",
+    )
+
+
+    parser.add_argument(
+        "--ixia-inventory",
+        default=None,
+        help="Path to ixia inventory json used to start/stop traffic for pre-event baseline validation.",
+    )
+    parser.add_argument(
+        "--ixia-session-id",
+        type=int,
+        default=None,
+        help="Optional IXIA session id. If omitted, the client resolves the active session.",
+    )
+    parser.add_argument(
+        "--baseline-profile",
+        default="hotspot_congestion_qmon",
+        help="Telemetry profile used for pre-event traffic baseline validation.",
+    )
+    parser.add_argument(
+        "--baseline-nodes",
+        default=None,
+        help="Comma-separated nodes to collect baseline telemetry from before event injection.",
+    )
+    parser.add_argument(
+        "--baseline-timeout",
+        type=int,
+        default=30,
+        help="Timeout for pre-event baseline telemetry collection.",
+    )
+    parser.add_argument(
+        "--baseline-topology",
+        default=str(TOPOLOGY_FILE),
+        help="Topology file passed to telemetry collection for pre-event baseline validation.",
+    )
+    return parser.parse_args()
+
+
+def run_cmd(cmd, step_name):
+    print(f"\n[STEP] {step_name}")
+    print(f"  CMD: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+
+    return {
+        "step": step_name,
+        "command": cmd,
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "status": "pass" if result.returncode == 0 else "fail",
+    }
+
+
+def load_json_file(path: Path):
+    if not path.exists():
+        raise FileNotFoundError(f"Required file not found: {path}")
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def load_inventory_data():
+    return load_inventory(str(INVENTORY_FILE))
+
+
+def get_node_connection(node_name, inventory):
+    node_data = inventory.get("nodes", {}).get(node_name)
+    if not node_data:
+        raise KeyError(f"Node '{node_name}' not found in inventory")
+
+    defaults = inventory.get("defaults", {})
+    auth_defaults = inventory.get("auth", {})
+    cred_defaults = inventory.get("credentials", {})
+    conn_defaults = inventory.get("connection", {})
+    device_defaults = inventory.get("device_defaults", {})
+
+    node_conn = node_data.get("connection", {})
+    node_auth = node_data.get("auth", {})
+    node_creds = node_data.get("credentials", {})
+
+    host = first_non_empty(
+        node_data.get("management_ip"),
+        node_data.get("mgmt_ip"),
+        node_data.get("ip"),
+        node_data.get("host"),
+        node_data.get("hostname"),
+        node_conn.get("host"),
+        node_conn.get("management_ip"),
+        defaults.get("management_ip"),
+        conn_defaults.get("host"),
+        conn_defaults.get("management_ip"),
+    )
+
+    user = first_non_empty(
+        node_data.get("username"),
+        node_data.get("user"),
+        node_conn.get("username"),
+        node_conn.get("user"),
+        node_auth.get("username"),
+        node_auth.get("user"),
+        node_creds.get("username"),
+        node_creds.get("user"),
+        defaults.get("username"),
+        defaults.get("user"),
+        auth_defaults.get("username"),
+        auth_defaults.get("user"),
+        cred_defaults.get("username"),
+        cred_defaults.get("user"),
+        conn_defaults.get("username"),
+        conn_defaults.get("user"),
+        device_defaults.get("username"),
+        device_defaults.get("user"),
+        os.getenv("FABRIC_CONTROLLER_USERNAME"),
+        "root",
+    )
+
+    password = first_non_empty(
+        node_data.get("password"),
+        node_conn.get("password"),
+        node_auth.get("password"),
+        node_creds.get("password"),
+        defaults.get("password"),
+        auth_defaults.get("password"),
+        cred_defaults.get("password"),
+        conn_defaults.get("password"),
+        device_defaults.get("password"),
+        os.getenv("FABRIC_CONTROLLER_PASSWORD"),
+    )
+
+    if not host:
+        raise ValueError(f"Management IP/host not found for node '{node_name}' in inventory")
+
+    if not password:
+        raise ValueError(
+            f"Password not found in inventory for node '{node_name}'. "
+            f"Checked node-level, nested auth/connection blocks, inventory defaults, and FABRIC_CONTROLLER_PASSWORD."
+        )
+
+    return {
+        "host": host,
+        "user": user,
+        "password": password,
+    }
+
+
+def run_remote_command(host, user, password, remote_cmd, step_name, timeout=120):
+    print(f"\n[STEP] {step_name}")
+    print(f"  REMOTE: {user}@{host}")
+    print(f"  CMD   : {remote_cmd}")
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    stdout_text = ""
+    stderr_text = ""
+    returncode = 0
+
+    try:
+        client.connect(
+            hostname=host,
+            username=user,
+            password=password,
+            look_for_keys=False,
+            allow_agent=False,
+            timeout=30,
+            banner_timeout=30,
+            auth_timeout=30,
+        )
+
+        stdin, stdout, stderr = client.exec_command(remote_cmd, timeout=timeout)
+        returncode = stdout.channel.recv_exit_status()
+        stdout_text = stdout.read().decode(errors="replace")
+        stderr_text = stderr.read().decode(errors="replace")
+
+        if stdout_text:
+            print(stdout_text, end="")
+        if stderr_text:
+            print(stderr_text, end="", file=sys.stderr)
+
+    except Exception as exc:
+        returncode = 1
+        stderr_text = str(exc)
+        print(f"  ERROR: {stderr_text}", file=sys.stderr)
+
+    finally:
+        client.close()
+
+    return {
+        "step": step_name,
+        "command": remote_cmd,
+        "returncode": returncode,
+        "stdout": stdout_text,
+        "stderr": stderr_text,
+        "status": "pass" if returncode == 0 else "fail",
+    }
+
+
+def copy_file_if_exists(src: Path, dst: Path):
+    if src.exists():
+        ensure_dir(dst.parent)
+        shutil.copy2(src, dst)
+        return True
+    return False
+
+
+def snapshot_artifacts(snapshot_root: Path, stage: str):
+    stage_root = snapshot_root / stage
+    copied = []
+
+    targets = [
+        (TOPOLOGY_FILE, stage_root / "topology" / TOPOLOGY_FILE.name),
+        (VALIDATION_JSON, stage_root / "validation" / VALIDATION_JSON.name),
+        (VALIDATION_TXT, stage_root / "validation" / VALIDATION_TXT.name),
+        (PRECHECK_JSON, stage_root / "precheck" / PRECHECK_JSON.name),
+        (PRECHECK_TXT, stage_root / "precheck" / PRECHECK_TXT.name),
+    ]
+
+    for src, dst in targets:
+        if copy_file_if_exists(src, dst):
+            copied.append(str(dst))
+
+    return copied
+
+
+def summarize_pipeline_steps(steps):
+    total = len(steps)
+    failed = [step for step in steps if step["status"] != "pass"]
+
+    return {
+        "total_steps": total,
+        "failed_steps": len(failed),
+        "status": "pass" if not failed else "fail",
+        "failed_step_names": [step["step"] for step in failed],
+    }
+
+
+def run_pipeline(stage_label):
+    steps = []
+
+    steps.append(run_cmd(
+        ["python", "-m", "controller.collect_device_facts"],
+        f"collect_device_facts ({stage_label})"
+    ))
+    if steps[-1]["returncode"] != 0:
+        return steps
+
+    steps.append(run_cmd(
+        ["python", "-m", "controller.topology_discovery"],
+        f"topology_discovery ({stage_label})"
+    ))
+    if steps[-1]["returncode"] != 0:
+        return steps
+
+    steps.append(run_cmd(
+        ["python", "-m", "controller.topology_validator"],
+        f"topology_validator ({stage_label})"
+    ))
+    if steps[-1]["returncode"] != 0:
+        return steps
+
+    steps.append(run_cmd(
+        ["python", "-m", "controller.stress_precheck"],
+        f"stress_precheck ({stage_label})"
+    ))
+
+    return steps
+
+
+def run_noop_action(settle_seconds):
+    print("\n[STRESS] mode=noop")
+    print("  No-op stress action selected. No changes applied to the fabric.")
+    time.sleep(settle_seconds)
+    return {
+        "stress_mode": "noop",
+        "status": "pass",
+        "details": f"No-op action executed. Slept for {settle_seconds} seconds.",
+    }
+
+
+def run_interface_bounce(node, interface, inventory, settle_seconds):
+    print(f"\n[STRESS] mode=interface_bounce node={node} interface={interface}")
+
+    if not node:
+        details = "Missing required argument: --node"
+        print(f"  ERROR: {details}")
+        return {
+            "stress_mode": "interface_bounce",
+            "status": "fail",
+            "details": details,
+            "target": {"node": node, "interface": interface},
+        }
+
+    if not interface:
+        details = "Missing required argument: --interface"
+        print(f"  ERROR: {details}")
+        return {
+            "stress_mode": "interface_bounce",
+            "status": "fail",
+            "details": details,
+            "target": {"node": node, "interface": interface},
+        }
+
+    try:
+        conn = get_node_connection(node, inventory)
+    except Exception as exc:
+        details = str(exc)
+        print(f"  ERROR: {details}")
+        return {
+            "stress_mode": "interface_bounce",
+            "status": "fail",
+            "details": details,
+            "target": {"node": node, "interface": interface},
+        }
+
+    host = conn["host"]
+    user = conn["user"]
+    password = conn["password"]
+
+    down_cmd = (
+        f'cli -c "configure; '
+        f'set interfaces {interface} disable; '
+        f'commit and-quit"'
+    )
+    up_cmd = (
+        f'cli -c "configure; '
+        f'delete interfaces {interface} disable; '
+        f'commit and-quit"'
+    )
+
+    step1 = run_remote_command(
+        host, user, password, down_cmd,
+        f"interface_bounce disable {node}:{interface}"
+    )
+    if step1["returncode"] != 0:
+        return {
+            "stress_mode": "interface_bounce",
+            "status": "fail",
+            "details": f"Failed to disable interface {node}:{interface}",
+            "target": {
+                "node": node,
+                "interface": interface,
+                "host": host,
+            },
+            "steps": [step1],
+        }
+
+    print(f"  Waiting {settle_seconds} seconds before re-enable...")
+    time.sleep(settle_seconds)
+
+    step2 = run_remote_command(
+        host, user, password, up_cmd,
+        f"interface_bounce enable {node}:{interface}"
+    )
+    if step2["returncode"] != 0:
+        return {
+            "stress_mode": "interface_bounce",
+            "status": "fail",
+            "details": f"Failed to re-enable interface {node}:{interface}",
+            "target": {
+                "node": node,
+                "interface": interface,
+                "host": host,
+            },
+            "steps": [step1, step2],
+        }
+
+    print(f"  Waiting {settle_seconds} seconds for fabric recovery...")
+    time.sleep(settle_seconds)
+
+    return {
+        "stress_mode": "interface_bounce",
+        "status": "pass",
+        "details": f"Interface bounce completed on {node}:{interface}.",
+        "target": {
+            "node": node,
+            "interface": interface,
+            "host": host,
+        },
+        "steps": [step1, step2],
+    }
+
+
+def run_bgp_clear(node, inventory, settle_seconds):
+    print(f"\n[STRESS] mode=bgp_clear node={node}")
+
+    if not node:
+        details = "Missing required argument: --node"
+        print(f"  ERROR: {details}")
+        return {
+            "stress_mode": "bgp_clear",
+            "status": "fail",
+            "details": details,
+            "target": {"node": node},
+        }
+
+    try:
+        conn = get_node_connection(node, inventory)
+    except Exception as exc:
+        details = str(exc)
+        print(f"  ERROR: {details}")
+        return {
+            "stress_mode": "bgp_clear",
+            "status": "fail",
+            "details": details,
+            "target": {"node": node},
+        }
+
+    host = conn["host"]
+    user = conn["user"]
+    password = conn["password"]
+
+    clear_cmd = 'cli -c "clear bgp neighbor all"'
+    step1 = run_remote_command(
+        host, user, password, clear_cmd,
+        f"bgp_clear on {node}"
+    )
+
+    if step1["returncode"] != 0:
+        return {
+            "stress_mode": "bgp_clear",
+            "status": "fail",
+            "details": f"Failed to clear BGP neighbors on {node}",
+            "target": {
+                "node": node,
+                "host": host,
+            },
+            "steps": [step1],
+        }
+
+    print(f"  Waiting {settle_seconds} seconds for BGP recovery...")
+    time.sleep(settle_seconds)
+
+    return {
+        "stress_mode": "bgp_clear",
+        "status": "pass",
+        "details": f"BGP clear completed on {node}.",
+        "target": {
+            "node": node,
+            "host": host,
+        },
+        "steps": [step1],
+    }
+
+
+def parse_targets(mode, targets_arg, node=None, interface=None):
+    targets = []
+
+    if mode == "noop":
+        return [{}]
+
+    if targets_arg:
+        raw_items = [item.strip() for item in targets_arg.split(",") if item.strip()]
+
+        for item in raw_items:
+            if mode == "bgp_clear":
+                targets.append({"node": item})
+            elif mode == "interface_bounce":
+                if "|" not in item:
+                    raise ValueError(
+                        f"Invalid interface_bounce target '{item}'. Expected format node|interface"
+                    )
+                node_name, intf = item.split("|", 1)
+                node_name = node_name.strip()
+                intf = intf.strip()
+
+                if not node_name or not intf:
+                    raise ValueError(
+                        f"Invalid interface_bounce target '{item}'. Expected non-empty node|interface"
+                    )
+
+                targets.append({
+                    "node": node_name,
+                    "interface": intf,
+                })
+    else:
+        if mode == "bgp_clear":
+            if not node:
+                raise ValueError("For bgp_clear provide --node or --targets")
+            targets.append({"node": node})
+        elif mode == "interface_bounce":
+            if not node or not interface:
+                raise ValueError("For interface_bounce provide --node/--interface or --targets")
+            targets.append({
+                "node": node,
+                "interface": interface,
+            })
+
+    return targets
+
+
+def run_single_stress_target(stress_mode, target, settle_seconds, inventory):
+    if stress_mode == "noop":
+        return run_noop_action(settle_seconds)
+
+    if stress_mode == "bgp_clear":
+        return run_bgp_clear(
+            node=target.get("node"),
+            inventory=inventory,
+            settle_seconds=settle_seconds,
+        )
+
+    if stress_mode == "interface_bounce":
+        return run_interface_bounce(
+            node=target.get("node"),
+            interface=target.get("interface"),
+            inventory=inventory,
+            settle_seconds=settle_seconds,
+        )
+
+    return {
+        "stress_mode": stress_mode,
+        "status": "fail",
+        "details": f"Unsupported stress mode: {stress_mode}",
+        "target": target,
+    }
+
+
+def run_parallel_stress_actions(stress_mode, targets, settle_seconds, parallel, inventory):
+    print(f"\n[STRESS-GROUP] mode={stress_mode} parallel={parallel} targets={len(targets)}")
+
+    if stress_mode == "noop":
+        result = run_noop_action(settle_seconds)
+        return {
+            "stress_mode": stress_mode,
+            "status": result["status"],
+            "details": result["details"],
+            "targets_total": 1,
+            "targets_passed": 1 if result["status"] == "pass" else 0,
+            "targets_failed": 0 if result["status"] == "pass" else 1,
+            "results": [result],
+        }
+
+    results = []
+    max_workers = max(1, parallel)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(
+                run_single_stress_target,
+                stress_mode,
+                target,
+                settle_seconds,
+                inventory,
+            ): target
+            for target in targets
+        }
+
+        for future in as_completed(future_map):
+            target = future_map[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = {
+                    "stress_mode": stress_mode,
+                    "status": "fail",
+                    "details": str(exc),
+                    "target": target,
+                }
+            results.append(result)
+
+    passed = sum(1 for r in results if r.get("status") == "pass")
+    failed = sum(1 for r in results if r.get("status") != "pass")
+
+    return {
+        "stress_mode": stress_mode,
+        "status": "pass" if failed == 0 else "fail",
+        "details": f"Parallel stress execution complete: passed={passed}, failed={failed}",
+        "targets_total": len(results),
+        "targets_passed": passed,
+        "targets_failed": failed,
+        "results": results,
+    }
+
+
+def run_stress_action(stress_mode, settle_seconds, inventory, node=None, interface=None, targets_arg=None, parallel=1):
+    try:
+        targets = parse_targets(
+            mode=stress_mode,
+            targets_arg=targets_arg,
+            node=node,
+            interface=interface,
+        )
+    except Exception as exc:
+        return {
+            "stress_mode": stress_mode,
+            "status": "fail",
+            "details": str(exc),
+            "results": [],
+        }
+
+    return run_parallel_stress_actions(
+        stress_mode=stress_mode,
+        targets=targets,
+        settle_seconds=settle_seconds,
+        parallel=parallel,
+        inventory=inventory,
+    )
+
+
+def build_comparison(pre_report, post_report):
+    pre_summary = pre_report.get("summary", {})
+    post_summary = post_report.get("summary", {})
+
+    return {
+        "physical_links": {
+            "pre": pre_summary.get("physical_links", {}),
+            "post": post_summary.get("physical_links", {}),
+        },
+        "ip_consistency": {
+            "pre": pre_summary.get("ip_consistency", {}),
+            "post": post_summary.get("ip_consistency", {}),
+        },
+        "bgp": {
+            "pre": pre_summary.get("bgp", {}),
+            "post": post_summary.get("bgp", {}),
+        },
+        "ready_for_stress": {
+            "pre": pre_report.get("ready_for_stress"),
+            "post": post_report.get("ready_for_stress"),
+        }
+    }
+
+
+def build_iteration_report(iteration, stress_result, post_steps, post_report):
+    post_pipeline = summarize_pipeline_steps(post_steps)
+    iteration_pass = (
+        stress_result.get("status") == "pass" and
+        post_pipeline.get("status") == "pass" and
+        post_report.get("ready_for_stress") is True
+    )
+
+    return {
+        "iteration": iteration,
+        "timestamp": utc_now(),
+        "stress_action": stress_result,
+        "post_pipeline": post_pipeline,
+        "post_precheck": post_report,
+        "status": "pass" if iteration_pass else "fail",
+    }
+
+
+def build_failure_report(pre_steps, stress_mode, reason):
+    return {
+        "timestamp": utc_now(),
+        "overall_status": "fail",
+        "pre_pipeline": summarize_pipeline_steps(pre_steps),
+        "stress_action": {
+            "stress_mode": stress_mode,
+            "status": "skipped",
+            "details": reason,
+        },
+        "post_pipeline": {
+            "total_steps": 0,
+            "failed_steps": 0,
+            "status": "skipped",
+            "failed_step_names": [],
+        },
+        "precheck_pre": {
+            "ready_for_stress": False,
+            "overall_status": "skipped",
+            "summary": {
+                "physical_links": {},
+                "ip_consistency": {},
+                "bgp": {},
+            }
+        },
+        "precheck_post": {
+            "ready_for_stress": False,
+            "overall_status": "skipped",
+            "summary": {
+                "physical_links": {},
+                "ip_consistency": {},
+                "bgp": {},
+            }
+        },
+        "comparison": {
+            "physical_links": {"pre": {}, "post": {}},
+            "ip_consistency": {"pre": {}, "post": {}},
+            "bgp": {"pre": {}, "post": {}},
+            "ready_for_stress": {"pre": False, "post": False},
+        },
+        "verdict": {
+            "precheck_before_stress": False,
+            "precheck_after_stress": False,
+            "fabric_stable_after_stress": False,
+        }
+    }
+
+
+def _as_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def evaluate_pre_event_gate(pre_report):
+    """
+    Decide whether the fabric is clean enough BEFORE event injection.
+
+    This is stronger than ready_for_stress:
+    - topology must be healthy
+    - BGP must be fully up
+    - IP consistency should not already be degraded
+    """
+    summary = pre_report.get("summary", {}) or {}
+    physical = summary.get("physical_links", {}) or {}
+    bgp = summary.get("bgp", {}) or {}
+    ip_consistency = summary.get("ip_consistency", {}) or {}
+
+    missing_links = _as_int(
+        physical.get("missing", physical.get("missing_links", 0)),
+        0,
+    )
+    bgp_down = _as_int(
+        bgp.get("down", bgp.get("down_sessions", 0)),
+        0,
+    )
+    ip_mismatch = (
+        _as_int(ip_consistency.get("mismatch", 0), 0)
+        + _as_int(ip_consistency.get("partial", 0), 0)
+    )
+
+    ready_for_stress = pre_report.get("ready_for_stress") is True
+
+    reasons = []
+    if not ready_for_stress:
+        reasons.append("precheck_not_ready")
+    if missing_links > 0:
+        reasons.append(f"physical_links_missing={missing_links}")
+    if bgp_down > 0:
+        reasons.append(f"bgp_down={bgp_down}")
+    if ip_mismatch > 0:
+        reasons.append(f"ip_consistency_mismatch={ip_mismatch}")
+
+    return {
+        "pass": len(reasons) == 0,
+        "ready_for_stress": ready_for_stress,
+        "missing_links": missing_links,
+        "bgp_down": bgp_down,
+        "ip_mismatch": ip_mismatch,
+        "reasons": reasons,
+        "summary": {
+            "physical_links": physical,
+            "bgp": bgp,
+            "ip_consistency": ip_consistency,
+        },
+    }
+
+
+def build_baseline_contamination_failure_report(
+    *,
+    run_id,
+    archive_root,
+    pre_steps,
+    pre_report,
+    pre_event_gate,
+    baseline_gate,
+    reason,
+):
+    return {
+        "run_id": run_id,
+        "timestamp": utc_now(),
+        "archive_root": str(archive_root),
+        "overall_status": "fail",
+        "campaign": {
+            "iterations_requested": 0,
+            "iterations_completed": 0,
+            "iterations_passed": 0,
+            "iterations_failed": 0,
+            "stop_on_failure": False,
+        },
+        "pre_pipeline": summarize_pipeline_steps(pre_steps),
+        "precheck_pre": pre_report,
+        "pre_event_gate": pre_event_gate,
+        "pre_event_traffic_baseline": baseline_gate,
+        "iteration_results": [],
+        "precheck_post": {
+            "ready_for_stress": False,
+            "overall_status": "skipped",
+            "summary": {
+                "physical_links": {},
+                "ip_consistency": {},
+                "bgp": {},
+            },
+        },
+        "comparison": {
+            "physical_links": {
+                "pre": pre_report.get("summary", {}).get("physical_links", {}),
+                "post": {},
+            },
+            "ip_consistency": {
+                "pre": pre_report.get("summary", {}).get("ip_consistency", {}),
+                "post": {},
+            },
+            "bgp": {
+                "pre": pre_report.get("summary", {}).get("bgp", {}),
+                "post": {},
+            },
+            "ready_for_stress": {
+                "pre": pre_report.get("ready_for_stress"),
+                "post": False,
+            },
+        },
+        "verdict": {
+            "precheck_before_stress": pre_report.get("ready_for_stress"),
+            "pre_event_gate_passed": pre_event_gate.get("pass"),
+            "pre_event_traffic_baseline_passed": baseline_gate.get("pass"),
+            "precheck_after_stress": False,
+            "fabric_stable_after_stress": False,
+        },
+        "failure_reason": reason,
+    }
+
+
+def run_pre_event_traffic_baseline(
+    *,
+    run_id: str,
+    ixia_inventory: str,
+    ixia_session_id: Optional[int],
+    baseline_profile: str,
+    baseline_nodes: str,
+    baseline_timeout: int,
+    baseline_topology: str,
+    stabilize_seconds: int,
+) -> Dict[str, Any]:
+    inv = load_json_file(Path(ixia_inventory))
+    api_server = inv.get("ixnetwork_api_server")
+    if not api_server:
+        raise RuntimeError("ixnetwork_api_server not found in ixia inventory")
+
+    ixia = IxiaClient(
+        api_server=api_server,
+        inventory_path=ixia_inventory,
+        timeout=baseline_timeout,
+        verify_tls=False,
+    )
+    sid = ixia.resolve_session_id(ixia_session_id)
+
+    print("\n[PRE-EVENT-BASELINE] starting IXIA traffic for baseline validation ...")
+    ixia.start_traffic(sid)
+
+    print(
+        f"[PRE-EVENT-BASELINE] sleeping {stabilize_seconds} seconds with traffic running "
+        "before baseline telemetry snapshot ..."
+    )
+    time.sleep(stabilize_seconds)
+
+    collect_snapshot(
+        run_id=run_id,
+        snapshot_name="pre_event_baseline",
+        profile=baseline_profile,
+        nodes=baseline_nodes,
+        timeout=baseline_timeout,
+        topology_path=baseline_topology,
+    )
+
+    snapshot_path = telemetry_json_path(run_id, "pre_event_baseline", baseline_profile)
+    baseline_report = load_json_file(Path(snapshot_path))
+    cleanliness = evaluate_pre_event_cleanliness(baseline_report)
+
+    return {
+        "pass": bool(cleanliness.get("pass")),
+        "snapshot_path": snapshot_path,
+        "profile": baseline_profile,
+        "nodes": baseline_nodes,
+        "ixia_session_id": sid,
+        "cleanliness": cleanliness,
+    }
+
+
+def stop_pre_event_baseline_traffic(ixia_inventory: str, ixia_session_id: Optional[int], timeout: int = 30):
+    inv = load_json_file(Path(ixia_inventory))
+    api_server = inv.get("ixnetwork_api_server")
+    if not api_server:
+        return
+
+    ixia = IxiaClient(
+        api_server=api_server,
+        inventory_path=ixia_inventory,
+        timeout=timeout,
+        verify_tls=False,
+    )
+    sid = ixia.resolve_session_id(ixia_session_id)
+    print("\n[PRE-EVENT-BASELINE] stopping IXIA traffic ...")
+    ixia.stop_traffic(sid)
+
+def build_pre_event_gate_failure_report(
+    *,
+    run_id,
+    archive_root,
+    pre_steps,
+    pre_report,
+    pre_event_gate,
+    reason,
+):
+    return {
+        "run_id": run_id,
+        "timestamp": utc_now(),
+        "archive_root": str(archive_root),
+        "overall_status": "fail",
+        "campaign": {
+            "iterations_requested": 0,
+            "iterations_completed": 0,
+            "iterations_passed": 0,
+            "iterations_failed": 0,
+            "stop_on_failure": False,
+        },
+        "pre_pipeline": summarize_pipeline_steps(pre_steps),
+        "precheck_pre": pre_report,
+        "pre_event_gate": pre_event_gate,
+        "iteration_results": [],
+        "precheck_post": {
+            "ready_for_stress": False,
+            "overall_status": "skipped",
+            "summary": {
+                "physical_links": {},
+                "ip_consistency": {},
+                "bgp": {},
+            },
+        },
+        "comparison": {
+            "physical_links": {
+                "pre": pre_report.get("summary", {}).get("physical_links", {}),
+                "post": {},
+            },
+            "ip_consistency": {
+                "pre": pre_report.get("summary", {}).get("ip_consistency", {}),
+                "post": {},
+            },
+            "bgp": {
+                "pre": pre_report.get("summary", {}).get("bgp", {}),
+                "post": {},
+            },
+            "ready_for_stress": {
+                "pre": pre_report.get("ready_for_stress"),
+                "post": False,
+            },
+        },
+        "verdict": {
+            "precheck_before_stress": pre_report.get("ready_for_stress"),
+            "pre_event_gate_passed": pre_event_gate.get("pass"),
+            "precheck_after_stress": False,
+            "fabric_stable_after_stress": False,
+        },
+        "failure_reason": reason,
+    }
+
+
+
+def build_final_campaign_report(run_id, archive_root, pre_steps, pre_report, iteration_results, stop_on_failure):
+    pre_pipeline = summarize_pipeline_steps(pre_steps)
+    total_iterations = len(iteration_results)
+    passed_iterations = sum(1 for x in iteration_results if x["status"] == "pass")
+    failed_iterations = sum(1 for x in iteration_results if x["status"] == "fail")
+
+    last_post_report = iteration_results[-1]["post_precheck"] if iteration_results else {
+        "ready_for_stress": False,
+        "summary": {"physical_links": {}, "ip_consistency": {}, "bgp": {}}
+    }
+
+    comparison = build_comparison(pre_report, last_post_report)
+
+    overall_pass = (
+        pre_pipeline["status"] == "pass" and
+        pre_report.get("ready_for_stress") is True and
+        failed_iterations == 0 and
+        total_iterations > 0
+    )
+
+    return {
+        "run_id": run_id,
+        "timestamp": utc_now(),
+        "archive_root": str(archive_root),
+        "overall_status": "pass" if overall_pass else "fail",
+        "campaign": {
+            "iterations_requested": total_iterations,
+            "iterations_completed": total_iterations,
+            "iterations_passed": passed_iterations,
+            "iterations_failed": failed_iterations,
+            "stop_on_failure": stop_on_failure,
+        },
+        "pre_pipeline": pre_pipeline,
+        "precheck_pre": pre_report,
+        "iteration_results": iteration_results,
+        "precheck_post": last_post_report,
+        "comparison": comparison,
+        "verdict": {
+            "precheck_before_stress": pre_report.get("ready_for_stress"),
+            "precheck_after_stress": last_post_report.get("ready_for_stress"),
+            "fabric_stable_after_stress": last_post_report.get("ready_for_stress") is True,
+        }
+    }
+
+
+def write_json_report(report, outfile: Path):
+    with open(outfile, "w") as f:
+        json.dump(report, f, indent=2)
+
+
+def write_text_report(report, outfile: Path):
+    with open(outfile, "w") as f:
+        f.write("STRESS ORCHESTRATOR REPORT\n")
+        f.write("==========================\n\n")
+
+        f.write(f"Run ID         : {report.get('run_id', 'N/A')}\n")
+        f.write(f"Timestamp      : {report['timestamp']}\n")
+        f.write(f"Archive root   : {report.get('archive_root', 'N/A')}\n")
+        f.write(f"Overall status : {report['overall_status']}\n\n")
+
+        campaign = report.get("campaign", {})
+        if campaign:
+            f.write("CAMPAIGN SUMMARY\n")
+            f.write("----------------\n")
+            f.write(f"Iterations requested : {campaign.get('iterations_requested')}\n")
+            f.write(f"Iterations completed : {campaign.get('iterations_completed')}\n")
+            f.write(f"Iterations passed    : {campaign.get('iterations_passed')}\n")
+            f.write(f"Iterations failed    : {campaign.get('iterations_failed')}\n")
+            f.write(f"Stop on failure      : {campaign.get('stop_on_failure')}\n\n")
+
+        f.write("PRE-PIPELINE\n")
+        f.write("------------\n")
+        f.write(f"Status         : {report['pre_pipeline']['status']}\n")
+        f.write(f"Total steps    : {report['pre_pipeline']['total_steps']}\n")
+        f.write(f"Failed steps   : {report['pre_pipeline']['failed_steps']}\n")
+        failed_pre = report["pre_pipeline"].get("failed_step_names", [])
+        if failed_pre:
+            f.write(f"Failed names   : {', '.join(failed_pre)}\n")
+        f.write("\n")
+
+        pre_event_gate = report.get("pre_event_gate")
+        if pre_event_gate:
+            f.write("PRE-EVENT GATE\n")
+            f.write("--------------\n")
+            f.write(f"Pass            : {pre_event_gate.get('pass')}\n")
+            f.write(f"Ready for stress: {pre_event_gate.get('ready_for_stress')}\n")
+            f.write(f"Missing links   : {pre_event_gate.get('missing_links')}\n")
+            f.write(f"BGP down        : {pre_event_gate.get('bgp_down')}\n")
+            f.write(f"IP mismatch     : {pre_event_gate.get('ip_mismatch')}\n")
+            reasons = pre_event_gate.get("reasons", [])
+            if reasons:
+                f.write(f"Reasons         : {', '.join(reasons)}\n")
+            f.write("\n")
+
+        iteration_results = report.get("iteration_results", [])
+        if iteration_results:
+            f.write("ITERATION RESULTS\n")
+            f.write("-----------------\n")
+            for item in iteration_results:
+                f.write(
+                    f"Iteration {item['iteration']} : status={item['status']} "
+                    f"post_ready={item['post_precheck'].get('ready_for_stress')}\n"
+                )
+                stress = item.get("stress_action", {})
+                f.write(
+                    f"  stress_status={stress.get('status')} "
+                    f"details={stress.get('details')}\n"
+                )
+                if "targets_total" in stress:
+                    f.write(
+                        f"  targets_total={stress.get('targets_total')} "
+                        f"targets_passed={stress.get('targets_passed')} "
+                        f"targets_failed={stress.get('targets_failed')}\n"
+                    )
+            f.write("\n")
+
+        comparison = report.get("comparison", {})
+        if comparison:
+            f.write("COMPARISON\n")
+            f.write("----------\n")
+            f.write(f"Pre ready_for_stress  : {comparison.get('ready_for_stress', {}).get('pre')}\n")
+            f.write(f"Post ready_for_stress : {comparison.get('ready_for_stress', {}).get('post')}\n\n")
+
+            for section in ("physical_links", "ip_consistency", "bgp"):
+                f.write(f"{section.upper()}\n")
+                pre_data = comparison.get(section, {}).get("pre", {})
+                post_data = comparison.get(section, {}).get("post", {})
+                f.write(f"  pre : {json.dumps(pre_data, sort_keys=True)}\n")
+                f.write(f"  post: {json.dumps(post_data, sort_keys=True)}\n\n")
+
+        f.write("VERDICT\n")
+        f.write("-------\n")
+        f.write(f"Precheck before stress : {report['verdict']['precheck_before_stress']}\n")
+        f.write(f"Precheck after stress  : {report['verdict']['precheck_after_stress']}\n")
+        f.write(f"Fabric stable after    : {report['verdict']['fabric_stable_after_stress']}\n")
+
+
+def print_summary(report, json_out, txt_out):
+    print(f"\nOrchestrator JSON report : {json_out}")
+    print(f"Orchestrator text report : {txt_out}")
+    print("\nORCHESTRATOR SUMMARY")
+    print(f"  Run ID                    : {report.get('run_id', 'N/A')}")
+    print(f"  Overall status            : {report['overall_status']}")
+    campaign = report.get("campaign", {})
+    if campaign:
+        print(f"  Iterations completed      : {campaign.get('iterations_completed')}")
+        print(f"  Iterations passed         : {campaign.get('iterations_passed')}")
+        print(f"  Iterations failed         : {campaign.get('iterations_failed')}")
+    print(f"  Precheck before stress    : {report['verdict']['precheck_before_stress']}")
+    print(f"  Precheck after stress     : {report['verdict']['precheck_after_stress']}")
+    print(f"  Fabric stable after stress: {report['verdict']['fabric_stable_after_stress']}")
+    archive_root = report.get("archive_root")
+    if archive_root:
+        print(f"  Archive root              : {archive_root}")
+
+def write_summary(
+    *,
+    run_id: str,
+    intent_name: str,
+    src: str,
+    dst: str,
+    profile: str,
+    nodes: str,
+    out_path: str,
+    stress_orchestrator_report: str | None = None,
+) -> None:
+    files = {
+        "pre_telemetry": telemetry_json_path(run_id, "pre", profile),
+        "running_telemetry": telemetry_json_path(run_id, "running", profile),
+        "post_telemetry": telemetry_json_path(run_id, "post", profile),
+        "running_congestion": congestion_json_path(run_id, "running", profile),
+        "running_fabric_hotspots": fabric_hotspot_json_path(run_id, "running", profile),
+        "running_delta": delta_json_path(run_id, "running", profile),
+    }
+
+    if stress_orchestrator_report:
+        files["stress_orchestrator_report"] = stress_orchestrator_report
+
+    data = {
+        "generated_at": utc_now_iso(),
+        "run_id": run_id,
+        "intent_name": intent_name,
+        "src": src,
+        "dst": dst,
+        "profile": profile,
+        "nodes": nodes,
+        "files": files,
+    }
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=False)
+
+def main():
+    args = parse_args()
+
+    if args.iterations < 1:
+        print("ERROR: --iterations must be >= 1", file=sys.stderr)
+        sys.exit(1)
+
+    if args.parallel < 1:
+        print("ERROR: --parallel must be >= 1", file=sys.stderr)
+        sys.exit(1)
+
+    run_id = args.run_id or default_run_id()
+    archive_root = OUTPUT_DIR / run_id
+
+    ensure_dir(OUTPUT_DIR)
+    ensure_dir(archive_root)
+
+    inventory = load_inventory_data()
+
+    # Baseline pre-pipeline only once
+    pre_steps = run_pipeline("pre")
+    pre_pipeline_summary = summarize_pipeline_steps(pre_steps)
+
+    if pre_pipeline_summary["status"] != "pass":
+        final_report = build_failure_report(
+            pre_steps=pre_steps,
+            stress_mode=args.mode,
+            reason="Skipped because pre-pipeline failed.",
+        )
+        final_report["run_id"] = run_id
+        final_report["archive_root"] = str(archive_root)
+    else:
+        pre_snapshot_files = snapshot_artifacts(archive_root, "baseline_pre")
+        if pre_snapshot_files:
+            print("\n[SNAPSHOT] baseline pre artifacts archived")
+            for item in pre_snapshot_files:
+                print(f"  - {item}")
+
+        pre_report = load_json_file(PRECHECK_JSON)
+
+        if not pre_report.get("ready_for_stress", False):
+            final_report = build_failure_report(
+                pre_steps=pre_steps,
+                stress_mode=args.mode,
+                reason="Skipped because precheck did not pass.",
+            )
+            final_report["run_id"] = run_id
+            final_report["archive_root"] = str(archive_root)
+        else:
+            # --------------------------------------------------------------
+            # NEW: pre-event contamination gate
+            # Make sure the issue is not already present before injecting chaos
+            # --------------------------------------------------------------
+            pre_event_gate_initial = evaluate_pre_event_gate(pre_report)
+
+            if not pre_event_gate_initial["pass"]:
+                final_report = build_pre_event_gate_failure_report(
+                    run_id=run_id,
+                    archive_root=archive_root,
+                    pre_steps=pre_steps,
+                    pre_report=pre_report,
+                    pre_event_gate=pre_event_gate_initial,
+                    reason=(
+                        "Pre-event contamination detected before stress injection: "
+                        + ", ".join(pre_event_gate_initial["reasons"])
+                    ),
+                )
+            else:
+                if args.pre_event_stabilize_seconds > 0:
+                    print(
+                        f"\n[PRE-EVENT-GATE] sleeping {args.pre_event_stabilize_seconds} seconds "
+                        "before final clean confirmation"
+                    )
+                    time.sleep(args.pre_event_stabilize_seconds)
+
+                confirm_steps = []
+                confirm_steps.append(
+                    run_cmd(
+                        ["python", "-m", "controller.stress_precheck"],
+                        "stress_precheck (pre_event_gate_confirm)",
+                    )
+                )
+
+                confirm_report = load_json_file(PRECHECK_JSON)
+                pre_event_gate_confirm = evaluate_pre_event_gate(confirm_report)
+
+                if confirm_steps[-1]["returncode"] != 0 or not pre_event_gate_confirm["pass"]:
+                    final_report = build_pre_event_gate_failure_report(
+                        run_id=run_id,
+                        archive_root=archive_root,
+                        pre_steps=pre_steps,
+                        pre_report=confirm_report,
+                        pre_event_gate=pre_event_gate_confirm,
+                        reason=(
+                            "Pre-event confirmation gate failed: "
+                            + ", ".join(pre_event_gate_confirm["reasons"])
+                        ),
+                    )
+                else:
+                    # ------------------------------------------------------
+                    # NEW: true pre-event traffic baseline cleanliness gate
+                    # ------------------------------------------------------
+                    baseline_gate = {
+                        "pass": True,
+                        "status": "skipped",
+                        "reason": "ixia/baseline args not provided",
+                    }
+
+                    if args.ixia_inventory and args.baseline_nodes:
+                        baseline_gate = run_pre_event_traffic_baseline(
+                            run_id=run_id,
+                            ixia_inventory=args.ixia_inventory,
+                            ixia_session_id=args.ixia_session_id,
+                            baseline_profile=args.baseline_profile,
+                            baseline_nodes=args.baseline_nodes,
+                            baseline_timeout=args.baseline_timeout,
+                            baseline_topology=args.baseline_topology,
+                            stabilize_seconds=args.pre_event_stabilize_seconds,
+                        )
+
+                        if not baseline_gate.get("pass"):
+                            # Stop traffic before aborting
+                            try:
+                                stop_pre_event_baseline_traffic(
+                                    ixia_inventory=args.ixia_inventory,
+                                    ixia_session_id=args.ixia_session_id,
+                                    timeout=args.baseline_timeout,
+                                )
+                            except Exception as exc:
+                                print(f"[PRE-EVENT-BASELINE] warning: failed to stop traffic: {exc}")
+
+                            final_report = build_baseline_contamination_failure_report(
+                                run_id=run_id,
+                                archive_root=archive_root,
+                                pre_steps=pre_steps,
+                                pre_report=confirm_report,
+                                pre_event_gate=pre_event_gate_confirm,
+                                baseline_gate=baseline_gate,
+                                reason=(
+                                    "Pre-event traffic baseline contaminated: "
+                                    + ", ".join(baseline_gate.get("cleanliness", {}).get("reasons", []))
+                                ),
+                            )
+                        else:
+                            print(
+                                "\n[PRE-EVENT-BASELINE] pass: baseline traffic cleanliness gate passed "
+                                "— proceeding to event injection"
+                            )
+
+                    if baseline_gate.get("pass"):
+                        iteration_results = []
+
+                        for iteration in range(1, args.iterations + 1):
+                            print("\n" + "=" * 72)
+                            print(f"[ITERATION] {iteration}/{args.iterations}")
+                            print("=" * 72)
+
+                            stress_result = run_stress_action(
+                                stress_mode=args.mode,
+                                settle_seconds=args.settle_seconds,
+                                inventory=inventory,
+                                node=args.node,
+                                interface=args.interface,
+                                targets_arg=args.targets,
+                                parallel=args.parallel,
+                            )
+
+                            if stress_result["status"] != "pass":
+                                post_steps = []
+                                post_report = {
+                                    "ready_for_stress": False,
+                                    "overall_status": "skipped",
+                                    "checks": {},
+                                    "failure_reasons": [stress_result["details"]],
+                                    "summary": {
+                                        "physical_links": {},
+                                        "ip_consistency": {},
+                                        "bgp": {},
+                                    }
+                                }
+                            else:
+                                post_steps = run_pipeline(f"post_iter_{iteration}")
+                                post_report = load_json_file(PRECHECK_JSON)
+
+                            iter_report = build_iteration_report(
+                                iteration=iteration,
+                                stress_result=stress_result,
+                                post_steps=post_steps,
+                                post_report=post_report,
+                            )
+                            iteration_results.append(iter_report)
+
+                            iter_dir = archive_root / f"iteration_{iteration:03d}"
+                            ensure_dir(iter_dir)
+                            iter_snapshot_files = snapshot_artifacts(iter_dir, "post")
+                            if iter_snapshot_files:
+                                print(f"\n[SNAPSHOT] iteration {iteration} artifacts archived")
+                                for item in iter_snapshot_files:
+                                    print(f"  - {item}")
+
+                            with open(iter_dir / "iteration_report.json", "w") as f:
+                                json.dump(iter_report, f, indent=2)
+
+                            if iter_report["status"] != "pass" and args.stop_on_failure:
+                                print(f"\n[STOP] iteration {iteration} failed and --stop-on-failure is set")
+                                break
+
+                            if iteration < args.iterations and args.interval_seconds > 0:
+                                print(f"\n[WAIT] sleeping {args.interval_seconds} seconds before next iteration")
+                                time.sleep(args.interval_seconds)
+
+                        final_report = build_final_campaign_report(
+                            run_id=run_id,
+                            archive_root=archive_root,
+                            pre_steps=pre_steps,
+                            pre_report=confirm_report,
+                            iteration_results=iteration_results,
+                            stop_on_failure=args.stop_on_failure,
+                        )
+                        final_report["pre_event_gate"] = pre_event_gate_confirm
+                        final_report["pre_event_traffic_baseline"] = baseline_gate
+
+                        # Optional cleanup: stop baseline traffic after event phase
+                        if args.ixia_inventory and args.baseline_nodes:
+                            try:
+                                stop_pre_event_baseline_traffic(
+                                    ixia_inventory=args.ixia_inventory,
+                                    ixia_session_id=args.ixia_session_id,
+                                    timeout=args.baseline_timeout,
+                                )
+                            except Exception as exc:
+                                print(f"[PRE-EVENT-BASELINE] warning: failed to stop traffic after iteration: {exc}")
+
+    json_out = archive_root / "stress_orchestrator_report.json"
+    txt_out = archive_root / "stress_orchestrator_report.txt"
+    final_report["report_files"] = {
+    "json_report": str(json_out),
+    "text_report": str(txt_out),
+    }
+    write_json_report(final_report, json_out)
+    write_text_report(final_report, txt_out)
+    print_summary(final_report, json_out, txt_out)
+    print(f"Stress orchestrator report : {json_out}")
+    print(f"STRESS_ORCHESTRATOR_REPORT={json_out}")
+
+    sys.exit(0 if final_report["overall_status"] == "pass" else 1)
+
+
+if __name__ == "__main__":
+    main()

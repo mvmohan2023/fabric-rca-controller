@@ -1,0 +1,2081 @@
+const PROFILE_LABELS = {
+  hotspot_congestion_qmon: "Hotspot Congestion Monitoring",
+};
+
+const INTENT_LABELS = {
+  hotspot_validation: "Hotspot Validation",
+};
+
+const state = {
+  cases: [],
+  currentRunId: null,
+  currentCase: null,
+  filteredEntities: [],
+  showAllCosHotspots: false,
+};
+
+const els = {
+  runSelect: document.getElementById("runSelect"),
+  searchInput: document.getElementById("searchInput"),
+  entityList: document.getElementById("entityList"),
+
+  heroTitle: document.getElementById("heroTitle"),
+  heroSub: document.getElementById("heroSub"),
+  badgeSeverity: document.getElementById("badgeSeverity"),
+  badgeConfidence: document.getElementById("badgeConfidence"),
+
+  summaryBlock: document.getElementById("summaryBlock"),
+  metadataBlock: document.getElementById("metadataBlock"),
+
+  statCause: document.getElementById("statCause"),
+  statConfidence: document.getElementById("statConfidence"),
+  statTopScore: document.getElementById("statTopScore"),
+  statTotalHotspots: document.getElementById("statTotalHotspots"),
+
+  queueRcaSummaryBlock: document.getElementById("queueRcaSummaryBlock"),
+  rcaNarrativeBlock: document.getElementById("rcaNarrativeBlock"),
+  hotspotInterpretationBlock: document.getElementById("hotspotInterpretationBlock"),
+  cosHotspotsTable: document.getElementById("cosHotspotsTable"),
+
+  eventsBlock: document.getElementById("eventsBlock"),
+  hotspotsTable: document.getElementById("hotspotsTable"),
+  severityBlock: document.getElementById("severityBlock"),
+  factorsBlock: document.getElementById("factorsBlock"),
+  evidenceBlock: document.getElementById("evidenceBlock"),
+  interfaceDropHealthBlock: document.getElementById("interfaceDropHealthBlock"),
+  trafficHealthBlock: document.getElementById("trafficHealthBlock"),
+  topologyViewLink: document.getElementById("topologyViewLink"),
+  ecmpRecoverySummary: document.getElementById("ecmpRecoverySummary"),
+  ecmpRecoveryVerdict: document.getElementById("ecmpRecoveryVerdict"),
+  ecmpRecoveryTable: document.getElementById("ecmpRecoveryTable"),
+  ecmpRecoveryDetailPanel: document.getElementById("ecmpRecoveryDetailPanel"),
+};
+
+function safe(value, fallback = "-") {
+  return value === undefined || value === null || value === "" ? fallback : value;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatPct(value, digits = 2) {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  return `${(Number(value) * 100).toFixed(digits)}%`;
+}
+
+function formatListOfPorts(rows) {
+  if (!Array.isArray(rows) || !rows.length) {
+    return `<div class="empty-state">No port ranking available</div>`;
+  }
+
+  return `
+    <table class="data-table ecmp-mini-table">
+      <thead>
+        <tr>
+          <th>Interface</th>
+          <th>Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((row) => `
+          <tr>
+            <td class="mono-text">${escapeHtml(safe(row.interface))}</td>
+            <td>${escapeHtml(formatDecimal(row.value, 4))}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+
+
+function formatNumber(value) {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  return Number(value).toLocaleString();
+}
+
+function formatDecimal(value, digits = 2) {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  return Number(value).toFixed(digits);
+}
+
+function formatConfidence(value) {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  return `${Math.round(Number(value) * 100)}%`;
+}
+
+function formatUtcTimestamp(value) {
+  if (!value) return "-";
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss} UTC`;
+}
+
+function formatUtcShort(value) {
+  if (!value) return "";
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi} UTC`;
+}
+
+function displayProfile(profile) {
+  return PROFILE_LABELS[profile] || profile || "-";
+}
+
+function displayIntent(intent) {
+  if (!intent) return "-";
+  if (INTENT_LABELS[intent]) return INTENT_LABELS[intent];
+  return intent
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function severityClass(severity) {
+  const s = String(severity || "").toLowerCase();
+  if (["critical"].includes(s)) return "badge badge-critical";
+  if (["high", "severe"].includes(s)) return "badge badge-high";
+  if (["medium", "moderate"].includes(s)) return "badge badge-medium";
+  if (["low"].includes(s)) return "badge badge-low";
+  return "badge badge-normal";
+}
+
+function normalizeSeverity(severity) {
+  const s = String(severity || "").toLowerCase();
+  if (["critical", "high", "medium", "low"].includes(s)) return s;
+  if (["warning", "warn", "moderate"].includes(s)) return "medium";
+  return "low";
+}
+
+function yesNo(value) {
+  if (value === true) return "Yes";
+  if (value === false) return "No";
+  return "-";
+}
+
+function renderEmpty(container, message) {
+  container.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+}
+
+function renderKeyValueList(container, items) {
+  if (!items.length) {
+    renderEmpty(container, "No data available");
+    return;
+  }
+
+  container.innerHTML = items
+    .map(
+      ([key, value]) => `
+        <div class="kv-row">
+          <div class="kv-key">${escapeHtml(key)}</div>
+          <div class="kv-value">${escapeHtml(value)}</div>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function classificationBadge(classification) {
+  const cls = String(classification || "");
+  if (!cls) {
+    return `<span class="cos-chip cos-chip-neutral">unknown</span>`;
+  }
+
+  if (
+    cls === "localized-lossy-mcast-pressure" ||
+    cls === "unexpected-taildrop-on-lossless" ||
+    cls === "queue-without-explicit-scheduler" ||
+    cls === "needs-manual-review"
+  ) {
+    return `<span class="cos-chip cos-chip-suspicious">${escapeHtml(cls)}</span>`;
+  }
+
+  if (cls === "expected-ecn-pressure" ||
+    cls === "expected-transient-control-impact") {
+    return `<span class="cos-chip cos-chip-expected">${escapeHtml(cls)}</span>`;
+  }
+
+  return `<span class="cos-chip cos-chip-neutral">${escapeHtml(cls)}</span>`;
+}
+
+function formatRatio(value) {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  return Number(value).toFixed(2);
+}
+
+function eventOutcomeBadge(value) {
+  const v = String(value || "unknown");
+  const lower = v.toLowerCase();
+
+  if (lower.includes("persistent")) {
+    return `<span class="cos-chip cos-chip-suspicious">${escapeHtml(v)}</span>`;
+  }
+  if (lower.includes("lingering") || lower.includes("recovering")) {
+    return `<span class="cos-chip cos-chip-neutral">${escapeHtml(v)}</span>`;
+  }
+  if (lower.includes("transient") || lower.includes("expected")) {
+    return `<span class="cos-chip cos-chip-expected">${escapeHtml(v)}</span>`;
+  }
+  return `<span class="cos-chip cos-chip-neutral">${escapeHtml(v)}</span>`;
+}
+
+function trendBadge(value) {
+  const v = String(value || "unknown");
+  const lower = v.toLowerCase();
+
+  if (lower === "increasing") {
+    return `<span class="cos-chip cos-chip-suspicious">Increasing</span>`;
+  }
+  if (lower === "flat" || lower === "mixed") {
+    return `<span class="cos-chip cos-chip-neutral">${escapeHtml(v)}</span>`;
+  }
+  if (lower === "decreasing" || lower === "cleared") {
+    return `<span class="cos-chip cos-chip-expected">${escapeHtml(v)}</span>`;
+  }
+  return `<span class="cos-chip cos-chip-neutral">${escapeHtml(v)}</span>`;
+}
+
+function buildPhaseSeries(item) {
+  const preSeries = Array.isArray(item.pre_tail_baseline_series)
+    ? item.pre_tail_baseline_series.map((v) => Number(v ?? 0))
+    : [];
+
+  const riseTail = Number(item.rise_tail_dropped_packets ?? 0);
+
+  const postSeries = Array.isArray(item.post_tail_linger_series)
+    ? item.post_tail_linger_series.map((v) => Number(v ?? 0))
+    : [];
+
+  const lingerTail = Number(item.linger_tail_dropped_packets ?? 0);
+
+  // Always preserve the phase structure:
+  // Pre-Baseline samples -> Event Window -> Post Recovery samples
+  if (preSeries.length > 0 && postSeries.length > 0) {
+    return [...preSeries, riseTail, ...postSeries];
+  }
+
+  if (preSeries.length > 0 && postSeries.length === 0) {
+    return [...preSeries, riseTail, lingerTail];
+  }
+
+  if (preSeries.length === 0 && postSeries.length > 0) {
+    return [0, riseTail, ...postSeries];
+  }
+
+  return [0, riseTail, lingerTail];
+}
+
+function renderSparkline(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return `<div class="sparkline-empty">-</div>`;
+  }
+
+  const nums = values.map((v) => Number(v || 0));
+  const max = Math.max(...nums, 1);
+  const width = 120;
+  const height = 32;
+  const step = nums.length > 1 ? width / (nums.length - 1) : width;
+
+  const points = nums.map((v, i) => {
+    const x = i * step;
+    const y = height - (v / max) * (height - 4) - 2;
+    return `${x},${y}`;
+  }).join(" ");
+
+  return `
+    <svg class="sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline>
+    </svg>
+  `;
+}
+
+function renderHotspotType(row) {
+  if (row.is_suspicious) {
+    return `<span class="cos-chip cos-chip-suspicious">Suspicious</span>`;
+  }
+  if (row.is_expected_ecn) {
+    return `<span class="cos-chip cos-chip-expected">Expected ECN</span>`;
+  }
+  return `<span class="cos-chip cos-chip-neutral">Info</span>`;
+}
+
+function renderSummary(report) {
+  const summary = report.summary || {};
+  const rootCause = report.root_cause || {};
+
+  const totalHotspots = Number(summary.total_hotspots || 0);
+  const hasHotspots = totalHotspots > 0;
+
+  const contributing =
+    Array.isArray(rootCause.contributing_factors) && rootCause.contributing_factors.length
+      ? rootCause.contributing_factors.slice(0, 3)
+      : [];
+
+  const primaryCause = hasHotspots
+    ? safe(summary.primary_cause)
+    : "No significant hotspot detected";
+
+  const confidenceText = hasHotspots
+    ? formatConfidence(summary.confidence)
+    : "N/A";
+
+  const severityText = hasHotspots
+    ? safe(summary.severity)
+    : "Normal";
+
+  const topHotspot = hasHotspots
+    ? [
+        safe(summary.top_hotspot_node),
+        safe(summary.top_hotspot_interface),
+        summary.top_hotspot_queue === undefined || summary.top_hotspot_queue === null
+          ? "-"
+          : `q${summary.top_hotspot_queue}`,
+      ].join(" / ")
+    : "None detected";
+
+  const recommendedAction = hasHotspots
+    ? `Investigate ${safe(summary.top_hotspot_node)} ${safe(summary.top_hotspot_interface)} q${safe(summary.top_hotspot_queue)} for persistent queue impact and CoS behavior.`
+    : "No immediate RCA action needed.";
+
+  const findingsHtml =
+    hasHotspots && contributing.length
+      ? contributing.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+      : `<li>No queue-level congestion hotspot was identified in the selected run.</li>`;
+
+  els.summaryBlock.innerHTML = `
+    <div class="summary-grid summary-grid-2">
+      <div class="summary-item">
+        <div class="summary-label">Primary Cause</div>
+        <div class="summary-value">${escapeHtml(primaryCause)}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">Confidence</div>
+        <div class="summary-value">${escapeHtml(confidenceText)}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">Severity</div>
+        <div class="summary-value">${escapeHtml(severityText)}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">Top Hotspot</div>
+        <div class="summary-value">${escapeHtml(topHotspot)}</div>
+      </div>
+      <div class="summary-item full-row">
+        <div class="summary-label">Recommended Action</div>
+        <div class="summary-value">${escapeHtml(recommendedAction)}</div>
+      </div>
+      <div class="summary-item full-row">
+        <div class="summary-label">Key Signals</div>
+        <div class="summary-value">
+          <ul class="compact-list">${findingsHtml}</ul>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderMetadata(report) {
+  const meta = report.run_metadata || {};
+  const nodes = Array.isArray(meta.nodes) ? meta.nodes.join(", ") : safe(meta.nodes);
+
+  renderKeyValueList(els.metadataBlock, [
+    ["Generated", formatUtcTimestamp(meta.generated_at)],
+    ["Run ID", safe(meta.run_id)],
+    ["Intent", displayIntent(meta.intent_name)],
+    ["Source", safe(meta.src)],
+    ["Destination", safe(meta.dst)],
+    ["Profile", displayProfile(meta.profile)],
+    ["Nodes", nodes || "-"],
+  ]);
+}
+
+function renderStats(report) {
+  const summary = report.summary || {};
+  const meta = report.run_metadata || {};
+
+  const totalHotspots = Number(summary.total_hotspots || 0);
+  const hasHotspots = totalHotspots > 0;
+
+  els.statCause.textContent = hasHotspots
+    ? safe(summary.primary_cause)
+    : "No hotspot";
+
+  els.statConfidence.textContent = hasHotspots
+    ? formatConfidence(summary.confidence)
+    : "N/A";
+
+  els.statTopScore.textContent = hasHotspots
+    ? formatDecimal(summary.top_hotspot_score || 0, 2)
+    : "N/A";
+
+  els.statTotalHotspots.textContent = formatNumber(totalHotspots);
+
+  els.badgeSeverity.className = severityClass(hasHotspots ? summary.severity : "normal");
+  els.badgeSeverity.textContent = `Severity: ${hasHotspots ? safe(summary.severity) : "normal"}`;
+
+  els.badgeConfidence.className = "badge badge-neutral";
+  els.badgeConfidence.textContent = `Confidence: ${hasHotspots ? formatConfidence(summary.confidence) : "N/A"}`;
+
+  els.heroTitle.textContent = `${safe(meta.run_id)} — ${displayIntent(meta.intent_name)}`;
+  els.heroSub.textContent = `${safe(meta.src)} → ${safe(meta.dst)} | ${displayProfile(meta.profile)} | ${formatUtcTimestamp(meta.generated_at)}`;
+}
+
+function renderQueueRcaSummary(report) {
+  const summary = report.summary || {};
+  const cosHealth = report.cos_health || {};
+
+  const cards = [
+    {
+      label: "Suspicious CoS Hotspots",
+      value: formatNumber(summary.suspicious_cos_hotspots || 0),
+      subtext: "Needs RCA focus",
+    },
+    {
+      label: "Expected ECN Hotspots",
+      value: formatNumber(summary.expected_ecn_hotspots || 0),
+      subtext: "Expected regulated congestion",
+    },
+    {
+      label: "Top Affected Queue",
+      value: safe(summary.top_affected_queue),
+      subtext: "Highest interpreted queue",
+    },
+    {
+      label: "Queue RCA Summary",
+      value: safe(cosHealth.queue_rca_summary || summary.queue_rca_summary, "N/A"),
+      subtext: "Suspicious vs expected split",
+    },
+  ];
+
+  els.queueRcaSummaryBlock.innerHTML = `
+    <div class="summary-grid summary-grid-2">
+      ${cards.map((card) => `
+        <div class="summary-item">
+          <div class="summary-label">${escapeHtml(card.label)}</div>
+          <div class="summary-value summary-value-large">${escapeHtml(card.value)}</div>
+          <div class="summary-subtext">${escapeHtml(card.subtext)}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderRcaNarrative(report) {
+  const cosHealth = report.cos_health || {};
+  const text = cosHealth.rca_interpretation || report.summary?.rca_interpretation;
+
+  if (!text) {
+    renderEmpty(els.rcaNarrativeBlock, "No CoS hotspot interpretation available");
+    return;
+  }
+
+  els.rcaNarrativeBlock.innerHTML = `
+    <div class="narrative-box">
+      <div class="narrative-title">RCA Interpretation</div>
+      <div class="narrative-body">${escapeHtml(text)}</div>
+      <div class="summary-subtext" style="margin-top:8px;">
+        Suspicious = queue behavior beyond normal ECN-regulated congestion.
+        Expected ECN = congestion primarily managed through ECN marking and likely expected under load.
+      </div>
+    </div>
+  `;
+}
+
+function renderHotspotInterpretation(report) {
+  const top = report.cos_health?.top_cos_hotspot || {};
+  const text = report.cos_health?.hotspot_interpretation || report.summary?.hotspot_interpretation;
+
+  if (!top || !Object.keys(top).length) {
+    renderEmpty(els.hotspotInterpretationBlock, "No hotspot interpretation available");
+    return;
+  }
+
+  els.hotspotInterpretationBlock.innerHTML = `
+    <div class="interpretation-wrap">
+      <div class="interpretation-header">
+        <div class="interpretation-title">Primary Queue Interpretation</div>
+        <div>${classificationBadge(top.classification)}</div>
+      </div>
+
+      <div class="summary-subtext" style="margin-bottom:12px;">
+        ${escapeHtml(safe(text, "No interpretation text available"))}
+      </div>
+
+      <div class="summary-grid summary-grid-2">
+        <div class="summary-item">
+          <div class="summary-label">Node / Interface / Queue</div>
+          <div class="summary-value">${escapeHtml(safe(top.node))} / <span class="mono-text">${escapeHtml(safe(top.interface))}</span> / q${escapeHtml(safe(top.queue))}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Forwarding Class</div>
+          <div class="summary-value">${escapeHtml(safe(top.forwarding_class))}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Confidence</div>
+          <div class="summary-value">${escapeHtml(formatConfidence(top.classification_confidence))}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Probable Cause</div>
+          <div class="summary-value">${escapeHtml(safe(top.probable_cause))}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderEvents(report) {
+  const events = report.events || [];
+
+  if (!events.length) {
+    renderEmpty(els.eventsBlock, "No trigger events recorded");
+    return;
+  }
+
+  els.eventsBlock.innerHTML = events
+    .map((event) => {
+      const details = event.details || {};
+      return `
+        <div class="stack-card">
+          <div class="stack-card-title">${escapeHtml(safe(event.event_name))}</div>
+          <div class="stack-card-meta">
+            <span><strong>Type:</strong> ${escapeHtml(safe(event.event_type))}</span>
+            <span><strong>Status:</strong> ${escapeHtml(safe(event.status))}</span>
+          </div>
+          <div class="stack-card-meta">
+            <span><strong>Target:</strong> ${escapeHtml(safe(event.target_node))} / ${escapeHtml(safe(event.target_interface))}</span>
+            <span><strong>Time:</strong> ${escapeHtml(formatUtcTimestamp(event.trigger_time))}</span>
+          </div>
+          <div class="stack-card-body">${escapeHtml(safe(event.summary))}</div>
+          <details class="details-block">
+            <summary>View execution details</summary>
+            <div class="details-grid">
+              <div><strong>Event Run ID:</strong> ${escapeHtml(safe(details.run_id))}</div>
+              <div><strong>Iteration:</strong> ${escapeHtml(safe(details.iteration))}</div>
+              <div><strong>Mode:</strong> ${escapeHtml(safe(details.stress_mode))}</div>
+              <div><strong>Target Host:</strong> ${escapeHtml(safe(details.target_host))}</div>
+              <div><strong>Disable Status:</strong> ${escapeHtml(safe(details.disable_status))}</div>
+              <div><strong>Enable Status:</strong> ${escapeHtml(safe(details.enable_status))}</div>
+              <div class="full-row"><strong>Disable Command:</strong> <code>${escapeHtml(safe(details.disable_command))}</code></div>
+              <div class="full-row"><strong>Enable Command:</strong> <code>${escapeHtml(safe(details.enable_command))}</code></div>
+            </div>
+          </details>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderHotspots(report) {
+  const hotspots = Array.isArray(report.hotspots) ? report.hotspots.slice(0, 3) : [];
+  const total = Number(report.summary?.total_queue_hotspots_detected || report.summary?.total_hotspots || 0);
+
+  if (!hotspots.length) {
+    renderEmpty(els.hotspotsTable, "No hotspots available");
+    return;
+  }
+
+  els.hotspotsTable.innerHTML = `
+    <div class="table-note">
+      Showing top 3 hotspot rows. Total queue hotspots detected: <strong>${escapeHtml(formatNumber(total))}</strong>.
+      Use the CoS-correlated hotspot table below for interpreted RCA focus.
+    </div>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Node</th>
+          <th>Interface</th>
+          <th>Queue</th>
+          <th>Severity</th>
+          <th>Score</th>
+          <th>Cause</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${hotspots
+          .map(
+            (h) => `
+              <tr>
+                <td>${escapeHtml(safe(h.node))}</td>
+                <td class="mono-text">${escapeHtml(safe(h.interface))}</td>
+                <td>${escapeHtml(safe(h.queue))}</td>
+                <td>${escapeHtml(safe(h.severity))}</td>
+                <td>${escapeHtml(formatDecimal(h.score || 0, 2))}</td>
+                <td>${escapeHtml(safe(h.probable_cause))}</td>
+              </tr>
+            `
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function getCosHotspotRows(report) {
+  const cosHealth = report.cos_health || {};
+  if (Array.isArray(cosHealth.all_hotspots) && cosHealth.all_hotspots.length) {
+    return cosHealth.all_hotspots;
+  }
+  if (Array.isArray(cosHealth.hotspots) && cosHealth.hotspots.length) {
+    return cosHealth.hotspots;
+  }
+  if (Array.isArray(cosHealth.top_hotspots) && cosHealth.top_hotspots.length) {
+    return cosHealth.top_hotspots;
+  }
+  return [];
+}
+
+function renderCosHotspots(report) {
+  const rows = getCosHotspotRows(report);
+
+  if (!rows.length) {
+    renderEmpty(els.cosHotspotsTable, "No CoS-correlated hotspots available");
+    return;
+  }
+
+  const visibleRows = state.showAllCosHotspots ? rows : rows.slice(0, 10);
+
+  els.cosHotspotsTable.innerHTML = `
+    <div class="table-note">
+      Showing <strong>${escapeHtml(formatNumber(visibleRows.length))}</strong> of
+      <strong>${escapeHtml(formatNumber(rows.length))}</strong> CoS hotspot entries.
+    </div>
+
+    ${rows.length > 10 ? `
+      <div class="table-note" style="margin-top:8px;">
+        <button id="toggleCosHotspotsBtn" class="ghost-btn">
+          ${state.showAllCosHotspots ? "Show less" : `Show all (${rows.length})`}
+        </button>
+      </div>
+    ` : ""}
+
+    <table class="data-table cos-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Node</th>
+          <th>Interface</th>
+          <th>Queue</th>
+          <th>FC</th>
+          <th>Classification</th>
+          <th>Event Outcome</th>
+          <th>Trend</th>
+          <th>Persistence</th>
+          <th>Rise</th>
+          <th>Linger</th>
+          <th>Severity</th>
+          <th>Confidence</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${visibleRows.map((r, index) => {
+          const suspicious = !!r.is_suspicious;
+          const expected = !!r.is_expected_ecn;
+          const rowClass = suspicious ? "row-suspicious" : expected ? "row-expected" : "";
+
+          return `
+            <tr class="${rowClass}">
+              <td>${index + 1}</td>
+              <td>${escapeHtml(safe(r.node))}</td>
+              <td class="mono-text">${escapeHtml(safe(r.interface))}</td>
+              <td>${escapeHtml(safe(r.queue))}</td>
+              <td>${escapeHtml(safe(r.forwarding_class))}</td>
+              <td>${classificationBadge(r.classification)}</td>
+              <td>${eventOutcomeBadge(r.event_delta_classification)}</td>
+              <td>${trendBadge(r.tail_linger_trend)}</td>
+              <td>${escapeHtml(formatRatio(r.recovery_ratio_tail))}</td>
+              <td>${escapeHtml(formatNumber(r.rise_tail_dropped_packets))}</td>
+              <td>${escapeHtml(formatNumber(r.linger_tail_dropped_packets))}</td>
+              <td><span class="badge badge-${normalizeSeverity(r.severity)}">${escapeHtml(safe(r.severity))}</span></td>
+              <td>${escapeHtml(formatConfidence(r.classification_confidence))}</td>
+            </tr>
+          `;
+        }).join("")}
+      </tbody>
+    </table>
+  `;
+
+  const toggleBtn = document.getElementById("toggleCosHotspotsBtn");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      state.showAllCosHotspots = !state.showAllCosHotspots;
+      renderCosHotspots(report);
+    });
+  }
+}
+
+
+function renderEcmpRecovery(report) {
+  const ecmp = report.ecmp_recovery || {};
+  const mode = ecmp.mode || "single_target";
+
+  const events = Array.isArray(report.events) ? report.events : [];
+  const eventNodes = [...new Set(events.map(e => e.target_node).filter(Boolean))];
+  const eventIfs = events
+    .map(e => `${e.target_node}:${e.target_interface}`)
+    .filter(Boolean);
+
+  function renderTargetCard(target) {
+    const analysis = target.analysis || {};
+    const baseline = target.baseline_summary || {};
+    const recovery = target.recovery_summary || {};
+
+    const overloaded = Array.isArray(analysis.top_overloaded_ports)
+      ? analysis.top_overloaded_ports.slice(0, 3)
+      : [];
+    const underloaded = Array.isArray(analysis.top_underloaded_ports)
+      ? analysis.top_underloaded_ports.slice(0, 3)
+      : [];
+
+    const overloadedHtml = overloaded.length
+      ? `
+        <div class="mini-section">
+          <div class="mini-title">Top Overloaded</div>
+          <ul class="compact-list">
+            ${overloaded.map(p => `
+              <li>
+                <span class="mono-text">${escapeHtml(safe(p.interface))}</span>
+                <strong>${formatDecimal(p.value, 4)}</strong>
+              </li>
+            `).join("")}
+          </ul>
+        </div>
+      `
+      : "";
+
+    const underloadedHtml = underloaded.length
+      ? `
+        <div class="mini-section">
+          <div class="mini-title">Top Underloaded</div>
+          <ul class="compact-list">
+            ${underloaded.map(p => `
+              <li>
+                <span class="mono-text">${escapeHtml(safe(p.interface))}</span>
+                <strong>${formatDecimal(p.value, 4)}</strong>
+              </li>
+            `).join("")}
+          </ul>
+        </div>
+      `
+      : "";
+
+    return `
+      <div class="card inset-card" style="margin-top:12px;">
+        <div class="card-header">
+          <h3 class="mono-text">${escapeHtml(safe(target.entity || `${target.node}|${target.interface}`))}</h3>
+        </div>
+
+        <div class="summary-grid summary-grid-4">
+          <div class="summary-item">
+            <div class="summary-label">Status</div>
+            <div class="summary-value">
+              <span class="${severityClass(target.status === "ok" ? "info" : target.status === "failed" ? "critical" : "warning")}">
+                ${escapeHtml(safe(target.status))}
+              </span>
+            </div>
+          </div>
+
+          <div class="summary-item">
+            <div class="summary-label">Classification</div>
+            <div class="summary-value">${escapeHtml(safe(analysis.classification))}</div>
+          </div>
+
+          <div class="summary-item">
+            <div class="summary-label">Severity</div>
+            <div class="summary-value">
+              <span class="${severityClass(analysis.severity)}">${escapeHtml(safe(analysis.severity))}</span>
+            </div>
+          </div>
+
+          <div class="summary-item">
+            <div class="summary-label">Confidence</div>
+            <div class="summary-value">${escapeHtml(safe(analysis.confidence))}</div>
+          </div>
+
+          <div class="summary-item">
+            <div class="summary-label">Node</div>
+            <div class="summary-value">${escapeHtml(safe(target.node))}</div>
+          </div>
+
+          <div class="summary-item">
+            <div class="summary-label">Interface</div>
+            <div class="summary-value mono-text">${escapeHtml(safe(target.interface))}</div>
+          </div>
+
+          <div class="summary-item">
+            <div class="summary-label">Baseline Spread</div>
+            <div class="summary-value">${formatDecimal(baseline.avg_spread, 4)}</div>
+          </div>
+
+          <div class="summary-item">
+            <div class="summary-label">Recovery Spread</div>
+            <div class="summary-value">${formatDecimal(recovery.avg_spread, 4)}</div>
+          </div>
+
+          <div class="summary-item full-row">
+            <div class="summary-label">Reason</div>
+            <div class="summary-value">${escapeHtml(safe(analysis.reason))}</div>
+          </div>
+        </div>
+
+        <div class="content-grid two-col" style="margin-top:12px;">
+          <div class="card inset-card">
+            <div class="card-header"><h3>Pre / Baseline</h3></div>
+            <div class="summary-block ecmp-prepost-block">
+              <div class="ecmp-line"><span>Avg Spread</span><strong>${formatDecimal(baseline.avg_spread, 4)}</strong></div>
+              <div class="ecmp-line"><span>Imbalance Spread</span><strong>${formatDecimal(baseline.avg_imbalance_spread, 4)}</strong></div>
+              <div class="ecmp-line"><span>Dominant Port</span><strong class="mono-text">${escapeHtml(safe((baseline.dominant_port_sequence || [])[0] || "-"))}</strong></div>
+              <div class="ecmp-line"><span>Dominant Persistence</span><strong>${formatDecimal(baseline.dominant_port_persistence, 4)}</strong></div>
+            </div>
+          </div>
+
+          <div class="card inset-card">
+            <div class="card-header"><h3>Post / Recovery</h3></div>
+            <div class="summary-block ecmp-prepost-block">
+              <div class="ecmp-line"><span>Avg Spread</span><strong>${formatDecimal(recovery.avg_spread, 4)}</strong></div>
+              <div class="ecmp-line"><span>Imbalance Spread</span><strong>${formatDecimal(recovery.avg_imbalance_spread, 4)}</strong></div>
+              <div class="ecmp-line"><span>Dominant Port</span><strong class="mono-text">${escapeHtml(safe((recovery.dominant_port_sequence || [])[0] || "-"))}</strong></div>
+              <div class="ecmp-line"><span>Dominant Persistence</span><strong>${formatDecimal(recovery.dominant_port_persistence, 4)}</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="content-grid two-col" style="margin-top:12px;">
+          <div class="card inset-card">
+            <div class="card-header"><h3>Hot Ports</h3></div>
+            ${overloadedHtml || `<div class="empty-state">No overloaded ports</div>`}
+          </div>
+
+          <div class="card inset-card">
+            <div class="card-header"><h3>Cold Ports</h3></div>
+            ${underloadedHtml || `<div class="empty-state">No underloaded ports</div>`}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (mode === "per_target") {
+    const targets = Array.isArray(ecmp.targets) ? ecmp.targets : [];
+    if (!targets.length) {
+      renderEmpty(els.ecmpRecoveryBlock, "No per-target ECMP recovery analysis available");
+      return;
+    }
+
+    const summary = ecmp.summary || {};
+    const rankedTargets = [...targets].sort((a, b) => {
+      const sevRank = { critical: 3, warning: 2, info: 1 };
+      const aRank = sevRank[((a.analysis || {}).severity || "").toLowerCase()] || 0;
+      const bRank = sevRank[((b.analysis || {}).severity || "").toLowerCase()] || 0;
+      return bRank - aRank;
+    });
+
+    const topTargets = rankedTargets.slice(0, 8);
+
+    els.ecmpRecoveryBlock.innerHTML = `
+      <div class="summary-grid summary-grid-4">
+        <div class="summary-item">
+          <div class="summary-label">Mode</div>
+          <div class="summary-value">Per Target</div>
+        </div>
+
+        <div class="summary-item">
+          <div class="summary-label">Target Count</div>
+          <div class="summary-value">${escapeHtml(String(ecmp.target_count || targets.length))}</div>
+        </div>
+
+        <div class="summary-item">
+          <div class="summary-label">OK</div>
+          <div class="summary-value">${escapeHtml(String(summary.ok_targets ?? 0))}</div>
+        </div>
+
+        <div class="summary-item">
+          <div class="summary-label">Failed / Skipped</div>
+          <div class="summary-value">${escapeHtml(String((summary.failed_targets ?? 0) + (summary.skipped_targets ?? 0)))}</div>
+        </div>
+
+        <div class="summary-item full-row">
+          <div class="summary-label">Event Nodes</div>
+          <div class="summary-value">${escapeHtml(eventNodes.join(", ") || "-")}</div>
+        </div>
+
+        <div class="summary-item full-row">
+          <div class="summary-label">Affected Interfaces</div>
+          <div class="summary-value mono-text">${escapeHtml(eventIfs.join(", ") || "-")}</div>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <div class="section-title">Top ECMP Targets</div>
+        ${topTargets.map(renderTargetCard).join("")}
+      </div>
+    `;
+    return;
+  }
+
+  const analysis = ecmp.analysis || {};
+  const baseline = ecmp.baseline_summary || {};
+  const recovery = ecmp.recovery_summary || {};
+  const configIntent = ecmp.config_intent || {};
+  const baselineGroups = baseline.speed_group_summary || {};
+  const recoveryGroups = recovery.speed_group_summary || {};
+
+  if (!Object.keys(analysis).length) {
+    renderEmpty(els.ecmpRecoveryBlock, "No ECMP recovery analysis available");
+    return;
+  }
+
+  const ecmpCfg = configIntent.ecmp || {};
+  const riskFlags = Array.isArray(configIntent.risk_flags) ? configIntent.risk_flags : [];
+  const hints = Array.isArray(configIntent.interpretation_hints) ? configIntent.interpretation_hints : [];
+
+  const summary = `
+    <div class="summary-grid summary-grid-3">
+      <div class="summary-item">
+        <div class="summary-label">Classification</div>
+        <div class="summary-value">${escapeHtml(safe(analysis.classification))}</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">Severity</div>
+        <div class="summary-value">
+          <span class="${severityClass(analysis.severity)}">${escapeHtml(safe(analysis.severity))}</span>
+        </div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">Confidence</div>
+        <div class="summary-value">${escapeHtml(safe(analysis.confidence))}</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">Analysis Node</div>
+        <div class="summary-value">${escapeHtml(safe(ecmp.analysis_node))}</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">Affected Event Nodes</div>
+        <div class="summary-value">${escapeHtml(eventNodes.join(", ") || "-")}</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">Affected Interfaces</div>
+        <div class="summary-value mono-text">${escapeHtml(eventIfs.join(", ") || "-")}</div>
+      </div>
+
+      <div class="summary-item full-row">
+        <div class="summary-label">Interpretation</div>
+        <div class="summary-value">${escapeHtml(safe(analysis.reason))}</div>
+      </div>
+    </div>
+  `;
+
+  const baselineDominant = (baseline.dominant_port_sequence || [])[0] || "-";
+  const recoveryDominant = (recovery.dominant_port_sequence || [])[0] || "-";
+
+  const prePost = `
+    <div class="content-grid two-col" style="margin-top:12px;">
+      <div class="card inset-card">
+        <div class="card-header"><h3>Pre / Baseline</h3></div>
+        <div class="summary-block ecmp-prepost-block">
+          <div class="ecmp-line"><span>Avg Spread</span><strong>${formatDecimal(baseline.avg_spread, 4)}</strong></div>
+          <div class="ecmp-line"><span>Imbalance Spread</span><strong>${formatDecimal(baseline.avg_imbalance_spread, 4)}</strong></div>
+          <div class="ecmp-line"><span>Dominant Port</span><strong class="mono-text">${escapeHtml(safe(baselineDominant))}</strong></div>
+          <div class="ecmp-line"><span>Dominant Persistence</span><strong>${formatDecimal(baseline.dominant_port_persistence, 4)}</strong></div>
+        </div>
+      </div>
+
+      <div class="card inset-card">
+        <div class="card-header"><h3>Post / Recovery</h3></div>
+        <div class="summary-block ecmp-prepost-block">
+          <div class="ecmp-line"><span>Avg Spread</span><strong>${formatDecimal(recovery.avg_spread, 4)}</strong></div>
+          <div class="ecmp-line"><span>Imbalance Spread</span><strong>${formatDecimal(recovery.avg_imbalance_spread, 4)}</strong></div>
+          <div class="ecmp-line"><span>Dominant Port</span><strong class="mono-text">${escapeHtml(safe(recoveryDominant))}</strong></div>
+          <div class="ecmp-line"><span>Dominant Persistence</span><strong>${formatDecimal(recovery.dominant_port_persistence, 4)}</strong></div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const renderGroupSummary = (title, groups) => {
+    if (!Object.keys(groups).length) {
+      return `<div class="card inset-card"><div class="card-header"><h3>${title}</h3></div><div class="empty-state">No speed-group summary available</div></div>`;
+    }
+
+    return `
+      <div class="card inset-card">
+        <div class="card-header"><h3>${title}</h3></div>
+        <div class="table-wrap">
+          <table class="data-table compact-table">
+            <thead>
+              <tr>
+                <th>Speed Group</th>
+                <th>Members</th>
+                <th>Actual Share</th>
+                <th>Expected Share</th>
+                <th>Delta</th>
+                <th>Spread</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${Object.entries(groups).map(([name, g]) => `
+                <tr>
+                  <td>${escapeHtml(name)}</td>
+                  <td>${escapeHtml(String(g.member_count ?? "-"))}</td>
+                  <td>${formatDecimal(g.actual_share_total, 4)}</td>
+                  <td>${formatDecimal(g.expected_share_total, 4)}</td>
+                  <td>${formatDecimal(g.actual_minus_expected_total, 4)}</td>
+                  <td>${formatDecimal(g.actual_share_spread, 4)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  };
+
+  const configBlock = `
+    <div class="card inset-card" style="margin-top:12px;">
+      <div class="card-header"><h3>ECMP Intent / Config</h3></div>
+      <div class="summary-grid summary-grid-4">
+        <div class="summary-item">
+          <div class="summary-label">DLB Enabled</div>
+          <div class="summary-value">${escapeHtml(safe(ecmpCfg.dlb_enabled))}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Flowlet Enabled</div>
+          <div class="summary-value">${escapeHtml(safe(ecmpCfg.flowlet_enabled))}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Flowlet Interval</div>
+          <div class="summary-value">${escapeHtml(safe(ecmpCfg.flowlet_inactivity_interval))}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Mixed Speed ECMP</div>
+          <div class="summary-value">${escapeHtml(safe(ecmpCfg.mixed_speed_ecmp_present))}</div>
+        </div>
+      </div>
+      ${riskFlags.length ? `
+        <div class="summary-block" style="margin-top:12px;">
+          <div class="summary-label">Risk Flags</div>
+          <div class="chip-row">
+            ${riskFlags.map(flag => `<span class="chip chip-warn">${escapeHtml(flag)}</span>`).join("")}
+          </div>
+        </div>
+      ` : ""}
+      ${hints.length ? `
+        <div class="summary-block" style="margin-top:12px;">
+          <div class="summary-label">Interpretation Hints</div>
+          <ul class="compact-list">
+            ${hints.map(h => `<li>${escapeHtml(h)}</li>`).join("")}
+          </ul>
+        </div>
+      ` : ""}
+    </div>
+  `;
+
+  els.ecmpRecoveryBlock.innerHTML = `
+    ${summary}
+    ${prePost}
+    <div class="content-grid two-col" style="margin-top:12px;">
+      ${renderGroupSummary("Baseline Speed Groups", baselineGroups)}
+      ${renderGroupSummary("Recovery Speed Groups", recoveryGroups)}
+    </div>
+    ${configBlock}
+  `;
+}
+
+function renderSeverityRow(label, value, severityClassName = "") {
+  return `
+    <div class="severity-card">
+      <div class="severity-top">
+        <div class="severity-name">${escapeHtml(label)}</div>
+        <div class="severity-count ${severityClassName}">${escapeHtml(formatNumber(value || 0))}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSeverity(report) {
+  const cosSeverity = report.cos_health?.severity_distribution || null;
+
+  if (cosSeverity) {
+    const suspicious = cosSeverity.suspicious || {};
+    const expected = cosSeverity.expected_ecn || {};
+    const informational = cosSeverity.informational || {};
+
+    els.severityBlock.innerHTML = `
+      <div class="severity-groups">
+        <div class="severity-group-card">
+          <div class="severity-group-title">Suspicious Queue Symptoms</div>
+          ${renderSeverityRow("Critical", suspicious.critical || 0, "sev-critical")}
+          ${renderSeverityRow("High", suspicious.high || 0, "sev-high")}
+          ${renderSeverityRow("Medium", suspicious.medium || 0, "sev-medium")}
+          ${renderSeverityRow("Low", suspicious.low || 0, "sev-low")}
+        </div>
+
+        <div class="severity-group-card">
+          <div class="severity-group-title">Expected ECN Congestion</div>
+          ${renderSeverityRow("Critical", expected.critical || 0, "sev-critical")}
+          ${renderSeverityRow("High", expected.high || 0, "sev-high")}
+          ${renderSeverityRow("Medium", expected.medium || 0, "sev-medium")}
+          ${renderSeverityRow("Low", expected.low || 0, "sev-low")}
+        </div>
+
+        <div class="severity-group-card">
+          <div class="severity-group-title">Informational</div>
+          ${renderSeverityRow("Entries", informational.count || 0, "sev-low")}
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const severityCounts = report.severity_counts || {};
+  const entries = Object.entries(severityCounts);
+
+  if (!entries.length) {
+    renderEmpty(els.severityBlock, "No severity distribution available");
+    return;
+  }
+
+  const total = entries.reduce((acc, [, count]) => acc + Number(count || 0), 0);
+
+  els.severityBlock.innerHTML = entries
+    .map(([severity, count]) => {
+      const pct = total > 0 ? Math.round((Number(count || 0) / total) * 100) : 0;
+      return `
+        <div class="severity-card">
+          <div class="severity-top">
+            <div class="severity-name">${escapeHtml(severity)}</div>
+            <div class="severity-count">${formatNumber(count)} <span class="muted-inline">(${pct}%)</span></div>
+          </div>
+          <div class="severity-bar-wrap">
+            <div class="severity-bar sev-${escapeHtml(String(severity).toLowerCase())}" style="width:${pct}%"></div>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderFactors(report) {
+  const factors =
+    report.root_cause?.contributing_factors ||
+    report.summary?.contributing_factors ||
+    [];
+
+  if (!Array.isArray(factors) || !factors.length) {
+    renderEmpty(els.factorsBlock, "No suggested investigation steps");
+    return;
+  }
+
+  els.factorsBlock.innerHTML = factors
+    .map(
+      (factor) => `
+        <div class="stack-card">
+          <div class="stack-card-body">${escapeHtml(factor)}</div>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function buildEntityList(report) {
+  const allHotspots = Array.isArray(report.all_hotspots) ? report.all_hotspots : [];
+  return allHotspots.map((item) => ({
+    entity_id: item.entity_id,
+    label: `${safe(item.node)} / ${safe(item.interface)} / q${safe(item.queue)}`,
+    data: item,
+  }));
+}
+
+function renderEntityList(report, searchText = "") {
+  const entities = buildEntityList(report);
+  const needle = searchText.trim().toLowerCase();
+
+  state.filteredEntities = needle
+    ? entities.filter(
+        (e) =>
+          e.entity_id.toLowerCase().includes(needle) ||
+          e.label.toLowerCase().includes(needle)
+      )
+    : entities;
+
+  if (!state.filteredEntities.length) {
+    renderEmpty(els.entityList, "No matching entities");
+    renderEmpty(els.evidenceBlock, "No evidence available");
+    return;
+  }
+
+  els.entityList.innerHTML = state.filteredEntities
+    .map(
+      (entity, index) => `
+        <button class="entity-btn ${index === 0 ? "active" : ""}" data-entity-id="${escapeHtml(entity.entity_id)}">
+          ${escapeHtml(entity.label)}
+        </button>
+      `
+    )
+    .join("");
+
+  bindEntityClicks(report);
+  renderEvidence(report, state.filteredEntities[0].entity_id);
+}
+
+function findCosHotspotByEntity(report, entityId) {
+  const rows = getCosHotspotRows(report);
+  return rows.find((r) => String(r.entity_id) === String(entityId)) || null;
+}
+
+
+function renderAnnotatedSparkline(series, options = {}) {
+  const values = Array.isArray(series) ? series.map((v) => Number(v ?? 0)) : [];
+
+  // Only treat as empty if there is literally no series
+  if (!values.length) {
+    return `<div class="sparkline-empty">No trend data</div>`;
+  }
+
+  const width = Number(options.width || 520);
+  const height = Number(options.height || 160);
+  const padLeft = 52;
+  const padRight = 18;
+  const padTop = 14;
+  const padBottom = 52;
+
+  const innerW = width - padLeft - padRight;
+  const innerH = height - padTop - padBottom;
+
+  const maxVal = Math.max(...values, 1);
+  const minVal = Math.min(0, ...values);
+
+  const scaleX = (idx) => {
+    if (values.length === 1) return padLeft + innerW / 2;
+    return padLeft + (idx / (values.length - 1)) * innerW;
+  };
+
+  const scaleY = (val) => {
+    const range = maxVal - minVal || 1;
+    return padTop + innerH - ((val - minVal) / range) * innerH;
+  };
+
+  const points = values.map((v, i) => `${scaleX(i)},${scaleY(v)}`).join(" ");
+  const baselineY = scaleY(0);
+  const midVal = Math.round((maxVal + minVal) / 2);
+
+  const preCount = Array.isArray(options.preSeries) ? options.preSeries.length : 0;
+  const eventIdx = preCount > 0 ? preCount : Math.min(1, values.length - 1);
+  const postCount = Math.max(0, values.length - eventIdx - 1);
+
+  // Normalize labels to match the series length exactly
+  let labels = Array.isArray(options.phaseLabels) ? [...options.phaseLabels] : [];
+  if (labels.length < values.length) {
+    while (labels.length < values.length) {
+      labels.push({ label: "", time: "" });
+    }
+  } else if (labels.length > values.length) {
+    labels = labels.slice(0, values.length);
+  }
+
+  const stageMarkers = [
+    { idx: 0, label: "Pre-Baseline" },
+    { idx: eventIdx, label: "Event Window" },
+  ];
+
+  const uniqueStageMarkers = stageMarkers.filter(
+    (m, i, arr) => arr.findIndex((x) => x.idx === m.idx) === i
+  );
+
+  const lastVal = values[values.length - 1];
+  const prevVal = values.length > 1 ? values[values.length - 2] : values[0];
+
+  let trendClass = "trend-state-neutral";
+  let trendLabel = "Stable";
+  if (lastVal > prevVal) {
+    trendClass = "trend-state-worsening";
+    trendLabel = "Worsening";
+  } else if (lastVal < prevVal) {
+    trendClass = "trend-state-recovering";
+    trendLabel = "Recovering";
+  }
+
+  const lineSegments = uniqueStageMarkers
+    .map((m) => {
+      const x = scaleX(m.idx);
+      return `<line x1="${x}" y1="${padTop}" x2="${x}" y2="${height - padBottom}" class="sparkline-stage-line" />`;
+    })
+    .join("");
+
+  const pointDots = values
+    .map((v, i) => {
+      const x = scaleX(i);
+      const y = scaleY(v);
+      const isEvent = i === eventIdx;
+      const isPost = i > eventIdx;
+      const isLast = i === values.length - 1;
+
+      const cls = isLast
+        ? "sparkline-dot sparkline-dot-last"
+        : isEvent
+        ? "sparkline-dot sparkline-dot-event"
+        : isPost
+        ? "sparkline-dot sparkline-dot-post"
+        : "sparkline-dot";
+
+      const radius = isLast ? 4.5 : isPost ? 3.8 : 3.2;
+      return `<circle cx="${x}" cy="${y}" r="${radius}" class="${cls}" />`;
+    })
+    .join("");
+
+  const yAxisLabels = `
+    <text x="${padLeft - 8}" y="${padTop + 4}" text-anchor="end" class="sparkline-axis-text">
+      ${formatNumber(maxVal)}
+    </text>
+    <text x="${padLeft - 8}" y="${baselineY + 4}" text-anchor="end" class="sparkline-axis-text">
+      0
+    </text>
+    ${
+      minVal < 0
+        ? `
+      <text x="${padLeft - 8}" y="${height - padBottom + 4}" text-anchor="end" class="sparkline-axis-text">
+        ${formatNumber(minVal)}
+      </text>
+    `
+        : ""
+    }
+  `;
+
+  const xAxisLabels = labels
+    .map((entry, idx) => {
+      const x = scaleX(idx);
+      const label = entry && entry.label ? entry.label : "";
+      const time = entry && entry.time ? entry.time : "";
+      return `
+        <text x="${x}" y="${height - 22}" text-anchor="middle" class="sparkline-stage-text">
+          ${escapeHtml(label)}
+        </text>
+        <text x="${x}" y="${height - 8}" text-anchor="middle" class="sparkline-stage-time">
+          ${escapeHtml(time)}
+        </text>
+      `;
+    })
+    .join("");
+
+  const phaseLegend = `
+    <div class="sparkline-phase-legend">
+      <span class="sparkline-phase-pill">Pre-Baseline</span>
+      <span class="sparkline-phase-pill">Event Window</span>
+      ${postCount >= 1 ? `<span class="sparkline-phase-pill">Post-1</span>` : ""}
+      ${postCount >= 2 ? `<span class="sparkline-phase-pill">Post-2</span>` : ""}
+      ${postCount >= 3 ? `<span class="sparkline-phase-pill">Post-3</span>` : ""}
+    </div>
+  `;
+
+  return `
+    <div class="annotated-sparkline-card">
+      <div class="annotated-sparkline-meta">
+        <span class="annotated-sparkline-source">Pre-Baseline → Event Window → Post Recovery</span>
+        <span class="annotated-sparkline-state ${trendClass}">${trendLabel}</span>
+      </div>
+
+      <svg class="annotated-sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Phase aware RCA trend">
+        <line x1="${padLeft}" y1="${baselineY}" x2="${width - padRight}" y2="${baselineY}" class="sparkline-baseline-line" />
+        <line x1="${padLeft}" y1="${padTop}" x2="${width - padRight}" y2="${padTop}" class="sparkline-guide-line" />
+        <line x1="${padLeft}" y1="${scaleY(midVal)}" x2="${width - padRight}" y2="${scaleY(midVal)}" class="sparkline-guide-line" />
+        ${
+          minVal < 0
+            ? `<line x1="${padLeft}" y1="${height - padBottom}" x2="${width - padRight}" y2="${height - padBottom}" class="sparkline-guide-line" />`
+            : ""
+        }
+        ${yAxisLabels}
+        ${lineSegments}
+        <polyline fill="none" points="${points}" class="sparkline-polyline" />
+        ${pointDots}
+        ${xAxisLabels}
+      </svg>
+
+      ${phaseLegend}
+    </div>
+  `;
+}
+
+function renderEvidence(report, entityId) {
+  const evidence = report.evidence_index || {};
+  const baseItem = evidence[entityId] || {};
+  const cosItem = findCosHotspotByEntity(report, entityId) || {};
+  
+  const item = {
+    ...baseItem,
+    ...cosItem,
+  };
+  
+  // Preserve phase-aware arrays from evidence_index when cosItem has empty arrays
+  if (
+    Array.isArray(baseItem.pre_tail_baseline_series) &&
+    baseItem.pre_tail_baseline_series.length > 0 &&
+    (!Array.isArray(item.pre_tail_baseline_series) || item.pre_tail_baseline_series.length === 0)
+  ) {
+    item.pre_tail_baseline_series = baseItem.pre_tail_baseline_series;
+  }
+  
+  if (
+    Array.isArray(baseItem.post_tail_linger_series) &&
+    baseItem.post_tail_linger_series.length > 0 &&
+    (!Array.isArray(item.post_tail_linger_series) || item.post_tail_linger_series.length === 0)
+  ) {
+    item.post_tail_linger_series = baseItem.post_tail_linger_series;
+  }
+  
+  if (
+    baseItem.phase_timestamps &&
+    (!item.phase_timestamps ||
+      !Array.isArray(item.phase_timestamps.pre_samples) ||
+      item.phase_timestamps.pre_samples.length === 0)
+  ) {
+    item.phase_timestamps = baseItem.phase_timestamps;
+  }
+
+  if (!item || !Object.keys(item).length) {
+    renderEmpty(els.evidenceBlock, "No evidence available for selected entity");
+    return;
+  }
+
+  const signals = item.signals || {};
+  const deltaRunning = item.delta_running || {};
+  const deltaPost = item.delta_post || {};
+  const runningMetrics = item.running_metrics || {};
+  const baselineMetrics = item.baseline_metrics || {};
+  const postMetrics = item.post_metrics || {};
+  const postSampleMetrics = item.post_sample_metrics || [];
+
+  const runningTail = Number(deltaRunning["tail-drop-pkts"] || 0);
+  const postTail = Number(deltaPost["tail-drop-pkts"] || 0);
+
+  let postBehavior = "Recovered";
+  if (postTail > runningTail) {
+    postBehavior = "Worsening";
+  } else if (postTail === runningTail && runningTail > 0) {
+    postBehavior = "Lingering";
+  }
+
+  const riseTail = Number(item.rise_tail_dropped_packets || 0);
+  const lingerTail = Number(item.linger_tail_dropped_packets || 0);
+  const recoveryRatio = item.recovery_ratio_tail;
+  const trend = item.tail_linger_trend;
+  const eventOutcome = item.event_delta_classification;
+
+  const hasPreSeries =
+    Array.isArray(item.pre_tail_baseline_series) &&
+    item.pre_tail_baseline_series.length > 0;
+
+  const hasPostSeries =
+    Array.isArray(item.post_tail_linger_series) &&
+    item.post_tail_linger_series.length > 0;
+
+  const hasPhaseTrend =
+    hasPreSeries ||
+    hasPostSeries ||
+    riseTail > 0 ||
+    lingerTail > 0;
+
+  const phaseSeries = hasPhaseTrend ? buildPhaseSeries(item) : [];
+  const phaseLabels = hasPhaseTrend ? buildPhaseLabels(item) : [];
+  console.log("PHASE INPUT CHECK", {
+    entityId,
+    pre_tail_baseline_series: item.pre_tail_baseline_series,
+    post_tail_linger_series: item.post_tail_linger_series,
+    rise_tail_dropped_packets: item.rise_tail_dropped_packets,
+    linger_tail_dropped_packets: item.linger_tail_dropped_packets,
+    phaseSeries,
+    phaseLabels
+  });
+  const trendGraphHtml = hasPhaseTrend
+    ? renderAnnotatedSparkline(phaseSeries, {
+        width: 620,
+        height: 160,
+        preSeries: item.pre_tail_baseline_series || [],
+        phaseLabels,
+      })
+    : `<div class="empty-state">Phase-aware trend not available for this entity</div>`;
+  console.log("PHASE DEBUG", {
+    pre: item.pre_tail_baseline_series,
+    rise: item.rise_tail_dropped_packets,
+    post: item.post_tail_linger_series,
+    phaseSeries,
+    phaseLabels,
+    seriesLen: phaseSeries.length,
+    labelsLen: phaseLabels.length,
+  });
+  const interpretationText =
+    !hasPhaseTrend
+      ? "This entity does not currently have phase-aware pre-window, event-window, and post-window trend enrichment."
+      : postBehavior === "Worsening"
+      ? "Post-event queue impact continues increasing across recovery checkpoints, indicating worsening persistence after the stress event."
+      : postBehavior === "Lingering"
+      ? "Post-event queue impact remains elevated across recovery checkpoints and requires investigation."
+      : "Post-event queue impact declines across recovery checkpoints, indicating recovery.";
+
+  console.log("ENTITY TREND CHECK", item.entity_id, {
+    rise_tail_dropped_packets: item.rise_tail_dropped_packets,
+    linger_tail_dropped_packets: item.linger_tail_dropped_packets,
+    post_tail_linger_series: item.post_tail_linger_series,
+    pre_tail_baseline_series: item.pre_tail_baseline_series,
+    phase_timestamps: item.phase_timestamps,
+    hasCosItem: !!findCosHotspotByEntity(report, entityId),
+    hasPhaseTrend,
+    phaseSeries,
+    phaseLabels,
+  });
+
+  els.evidenceBlock.innerHTML = `
+    <div class="evidence-grid">
+      <div class="evidence-card">
+        <h4>Entity Summary</h4>
+        <div class="evidence-line"><strong>Node:</strong> ${escapeHtml(safe(item.node))}</div>
+        <div class="evidence-line"><strong>Interface:</strong> <span class="mono-text">${escapeHtml(safe(item.interface))}</span></div>
+        <div class="evidence-line"><strong>Queue:</strong> ${escapeHtml(safe(item.queue))}</div>
+        <div class="evidence-line"><strong>Severity:</strong> ${escapeHtml(safe(item.severity))}</div>
+        <div class="evidence-line"><strong>Probable Cause:</strong> ${escapeHtml(safe(item.probable_cause))}</div>
+      </div>
+
+      <div class="evidence-card">
+        <h4>Phase-Aware RCA</h4>
+        <div class="evidence-line"><strong>Event Outcome:</strong> ${eventOutcomeBadge(eventOutcome)}</div>
+        <div class="evidence-line"><strong>Recovery Trend:</strong> ${escapeHtml(postBehavior)}</div>
+        <div class="evidence-line"><strong>Trend Classification:</strong> ${trendBadge(trend)}</div>
+        <div class="evidence-line"><strong>Persistence Ratio:</strong> ${escapeHtml(formatRatio(recoveryRatio))}</div>
+        <div class="evidence-line"><strong>Rise:</strong> ${escapeHtml(formatNumber(riseTail))}</div>
+        <div class="evidence-line"><strong>Linger:</strong> ${escapeHtml(formatNumber(lingerTail))}</div>
+
+        <div class="phase-trend-panel">
+          <div class="phase-trend-title">Queue Recovery Trend (${postSampleMetrics.length || 0} post checkpoints)</div>
+          ${trendGraphHtml}
+          <div class="summary-subtext" style="margin-top:10px;">${escapeHtml(interpretationText)}</div>
+          <div class="summary-subtext">
+            Trend view shows pre-window baseline, event-window rise, and post-recovery checkpoints for quick RCA comparison.
+          </div>
+          <div class="summary-subtext">
+            X-axis labels show phase checkpoints and timestamps when available.
+          </div>
+        </div>
+      </div>
+
+      <div class="evidence-card full-width">
+        <h4>Key Signal Snapshot</h4>
+        <div class="summary-grid summary-grid-3">
+          <div class="summary-item">
+            <div class="summary-label">Tail Drop Delta (Running)</div>
+            <div class="summary-value">${escapeHtml(formatNumber(deltaRunning["tail-drop-pkts"] || 0))}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Tail Drop Delta (Post)</div>
+            <div class="summary-value">${escapeHtml(formatNumber(deltaPost["tail-drop-pkts"] || 0))}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Temporal Pattern</div>
+            <div class="summary-value">${escapeHtml(safe(item.temporal_pattern))}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="evidence-card full-width">
+        <details class="details-block">
+          <summary>View raw evidence details</summary>
+          <div class="details-grid" style="margin-top:12px;">
+            <div class="full-row"><strong>Signals</strong><pre>${escapeHtml(JSON.stringify(signals, null, 2))}</pre></div>
+            <div><strong>Baseline Metrics</strong><pre>${escapeHtml(JSON.stringify(baselineMetrics, null, 2))}</pre></div>
+            <div><strong>Running Metrics</strong><pre>${escapeHtml(JSON.stringify(runningMetrics, null, 2))}</pre></div>
+            <div><strong>Post Metrics</strong><pre>${escapeHtml(JSON.stringify(postMetrics, null, 2))}</pre></div>
+            <div><strong>Running Delta</strong><pre>${escapeHtml(JSON.stringify(deltaRunning, null, 2))}</pre></div>
+            <div><strong>Post Delta</strong><pre>${escapeHtml(JSON.stringify(deltaPost, null, 2))}</pre></div>
+            <div class="full-row"><strong>Post Sample Metrics</strong><pre>${escapeHtml(JSON.stringify(postSampleMetrics, null, 2))}</pre></div>
+          </div>
+        </details>
+      </div>
+    </div>
+  `;
+}
+
+function formatTimeLabel(ts) {
+  if (!ts) return "";
+  try {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
+function buildPhaseLabels(item) {
+  const preSeries = Array.isArray(item.pre_tail_baseline_series)
+    ? item.pre_tail_baseline_series
+    : [];
+
+  const postSeries = Array.isArray(item.post_tail_linger_series)
+    ? item.post_tail_linger_series
+    : [];
+
+  const phaseTimestamps = item.phase_timestamps || {};
+  const preTs = Array.isArray(phaseTimestamps.pre_samples)
+    ? phaseTimestamps.pre_samples
+    : [];
+  const postTs = Array.isArray(phaseTimestamps.post_samples)
+    ? phaseTimestamps.post_samples
+    : [];
+  const eventTs = phaseTimestamps.event_window || phaseTimestamps.event || "";
+
+  // 🔹 Helper: short time (HH:MM)
+  function formatShort(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return "";
+    const hh = String(d.getUTCHours()).padStart(2, "0");
+    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+
+  const labels = [];
+
+  // 🔹 Pre (P1, P2, P3)
+  for (let i = 0; i < 3; i += 1) {
+    labels.push({
+      label: `P${i + 1}`,
+      time: formatShort(preTs[i]),
+      fullTime: preTs[i] || "",
+    });
+  }
+
+  // 🔹 Event
+  labels.push({
+    label: "Evt",
+    time: formatShort(eventTs),
+    fullTime: eventTs || "",
+  });
+
+  // 🔹 Post (R1, R2, R3)
+  for (let i = 0; i < 3; i += 1) {
+    labels.push({
+      label: `R${i + 1}`,
+      time: formatShort(postTs[i]),
+      fullTime: postTs[i] || "",
+    });
+  }
+
+  return labels;
+}
+function bindEntityClicks(report) {
+  const buttons = els.entityList.querySelectorAll(".entity-btn");
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      buttons.forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderEvidence(report, btn.dataset.entityId);
+    });
+  });
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+
+function renderTopologyViewLink(report) {
+  const runId = report?.run_metadata?.run_id || state.currentRunId;
+  if (!runId || !els.topologyViewLink) {
+    return;
+  }
+
+  const href = `/artifacts/campaigns/${encodeURIComponent(runId)}/topology_view.html`;
+  els.topologyViewLink.href = href;
+  els.topologyViewLink.textContent = "Open Topology View";
+  els.topologyViewLink.style.pointerEvents = "auto";
+  els.topologyViewLink.style.opacity = "1";
+}
+
+
+async function loadCases() {
+  const data = await fetchJson("/api/rca/cases");
+  state.cases = Array.isArray(data.cases) ? data.cases : [];
+
+  if (!state.cases.length) {
+    els.runSelect.innerHTML = `<option value="">No runs available</option>`;
+    els.heroTitle.textContent = "No RCA cases found";
+    els.heroSub.textContent = "Generate an RCA run to populate the dashboard";
+    return;
+  }
+
+  els.runSelect.innerHTML = state.cases
+    .map(
+      (item) => `
+        <option value="${escapeHtml(item.run_id)}">
+         ${escapeHtml(item.run_id)} — ${escapeHtml(displayIntent(item.intent_name))} — ${escapeHtml(formatUtcShort(item.generated_at))}
+        </option>
+      `
+    )
+    .join("");
+
+  state.currentRunId = state.cases[0].run_id;
+  els.runSelect.value = state.currentRunId;
+  await loadCase(state.currentRunId);
+}
+
+async function loadCase(runId) {
+  state.currentRunId = runId;
+  state.showAllCosHotspots = false;
+
+  const report = await fetchJson(`/api/rca/cases/${encodeURIComponent(runId)}`);
+  state.currentCase = report;
+
+  renderStats(report);
+  renderSummary(report);
+  renderMetadata(report);
+  renderQueueRcaSummary(report);
+  renderRcaNarrative(report);
+  renderHotspotInterpretation(report);
+  renderEvents(report);
+  renderHotspots(report);
+  renderCosHotspots(report);
+  renderSeverity(report);
+  renderFactors(report);
+  renderEntityList(report, els.searchInput.value);
+  renderInterfaceDropHealth(report);
+  renderEcmpRecovery(report);
+  renderTrafficHealth(report);
+  renderTopologyViewLink(report);
+}
+
+function bindEvents() {
+  els.runSelect.addEventListener("change", async (e) => {
+    const runId = e.target.value;
+    if (runId) {
+      await loadCase(runId);
+    }
+  });
+
+  els.searchInput.addEventListener("input", () => {
+    if (state.currentCase) {
+      renderEntityList(state.currentCase, els.searchInput.value);
+    }
+  });
+}
+
+async function init() {
+  try {
+    bindEvents();
+    await loadCases();
+  } catch (err) {
+    console.error(err);
+    els.heroTitle.textContent = "Failed to load dashboard";
+    els.heroSub.textContent = err.message || "Unknown error";
+    if (els.topologyViewLink) {
+      els.topologyViewLink.href = "#";
+      els.topologyViewLink.textContent = "Topology View Unavailable";
+      els.topologyViewLink.style.pointerEvents = "none";
+      els.topologyViewLink.style.opacity = "0.6";
+    }
+    renderEmpty(els.summaryBlock, "Unable to load RCA summary");
+    renderEmpty(els.metadataBlock, "Unable to load run metadata");
+    renderEmpty(els.queueRcaSummaryBlock, "Unable to load queue RCA summary");
+    renderEmpty(els.rcaNarrativeBlock, "Unable to load RCA interpretation");
+    renderEmpty(els.hotspotInterpretationBlock, "Unable to load hotspot interpretation");
+    renderEmpty(els.eventsBlock, "Unable to load events");
+    renderEmpty(els.hotspotsTable, "Unable to load hotspots");
+    renderEmpty(els.cosHotspotsTable, "Unable to load CoS hotspots");
+    renderEmpty(els.severityBlock, "Unable to load severity distribution");
+    renderEmpty(els.factorsBlock, "Unable to load investigation factors");
+    renderEmpty(els.entityList, "Unable to load entities");
+    renderEmpty(els.evidenceBlock, "Unable to load evidence");
+    renderEmpty(els.interfaceDropHealthBlock, "Unable to load interface drop/error health");
+    renderEmpty(els.trafficHealthBlock, "Unable to load traffic / IXIA / RoCE health");
+  }
+}
+
+function renderInterfaceDropHealth(report) {
+  const data = report.interface_drop_health || {};
+  const totals = data.totals || {};
+  const top = Array.isArray(data.top_impacted_interfaces) ? data.top_impacted_interfaces : [];
+
+  const hasAny =
+    Number(totals.in_discards || 0) > 0 ||
+    Number(totals.out_discards || 0) > 0 ||
+    Number(totals.in_errors || 0) > 0 ||
+    Number(totals.out_errors || 0) > 0 ||
+    Number(totals.carrier_transitions || 0) > 0;
+
+  if (!hasAny && !top.length) {
+    renderEmpty(els.interfaceDropHealthBlock, "No interface drop/error activity detected");
+    return;
+  }
+
+  els.interfaceDropHealthBlock.innerHTML = `
+    <div class="summary-grid summary-grid-3">
+      <div class="summary-item">
+        <div class="summary-label">Ingress Discards</div>
+        <div class="summary-value summary-value-large">${escapeHtml(formatNumber(totals.in_discards || 0))}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">Egress Discards</div>
+        <div class="summary-value summary-value-large">${escapeHtml(formatNumber(totals.out_discards || 0))}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">Carrier Transitions</div>
+        <div class="summary-value summary-value-large">${escapeHtml(formatNumber(totals.carrier_transitions || 0))}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">In Errors</div>
+        <div class="summary-value summary-value-large">${escapeHtml(formatNumber(totals.in_errors || 0))}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">Out Errors</div>
+        <div class="summary-value summary-value-large">${escapeHtml(formatNumber(totals.out_errors || 0))}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">Status</div>
+        <div class="summary-value summary-value-large">${escapeHtml(safe(data.status, "normal"))}</div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;">
+      <div class="table-note">Top impacted interfaces based on discards/errors/carrier transitions.</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Interface</th>
+            <th>In Discards</th>
+            <th>Out Discards</th>
+            <th>In Errors</th>
+            <th>Out Errors</th>
+            <th>Carrier Transitions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${top.map((r) => `
+            <tr>
+              <td>${escapeHtml(safe(r.node))}</td>
+              <td class="mono-text">${escapeHtml(safe(r.interface))}</td>
+              <td>${escapeHtml(formatNumber(r.in_discards || 0))}</td>
+              <td>${escapeHtml(formatNumber(r.out_discards || 0))}</td>
+              <td>${escapeHtml(formatNumber(r.in_errors || 0))}</td>
+              <td>${escapeHtml(formatNumber(r.out_errors || 0))}</td>
+              <td>${escapeHtml(formatNumber(r.carrier_transitions || 0))}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderTrafficHealth(report) {
+  const data = report.traffic_health || {};
+  const live = data.live_alert_summary || {};
+  const worstRx = Array.isArray(data.worst_rx_ports) ? data.worst_rx_ports : [];
+  const deepRx = Array.isArray(data.deep_rx_hotspots) ? data.deep_rx_hotspots : [];
+  const topAlerts = Array.isArray(live.top_alerts) ? live.top_alerts : [];
+  const rocev2Summary = data.rocev2_summary || {};
+  const trafficSummary = data.traffic_summary || {};
+
+  els.trafficHealthBlock.innerHTML = `
+    <div class="summary-grid summary-grid-3">
+      <div class="summary-item">
+        <div class="summary-label">Traffic Verdict</div>
+        <div class="summary-value summary-value-large">${escapeHtml(safe(data.traffic_verdict, "unknown"))}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">RoCEv2 Verdict</div>
+        <div class="summary-value summary-value-large">${escapeHtml(safe(data.rocev2_verdict, "unknown"))}</div>
+      </div>
+      <div class="summary-item">
+        <div class="summary-label">IXIA Critical Alerts</div>
+        <div class="summary-value summary-value-large">${escapeHtml(formatNumber(live.critical_alerts || 0))}</div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;" class="table-wrap">
+      <div class="table-note">Top IXIA live alerts</div>
+      ${
+        topAlerts.length ? `
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Iteration</th>
+              <th>Timestamp</th>
+              <th>Severity</th>
+              <th>Type</th>
+              <th>RX Port</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${topAlerts.slice(0, 5).map(a => `
+              <tr>
+                <td>${escapeHtml(safe(a.iteration))}</td>
+                <td>${escapeHtml(safe(a.timestamp))}</td>
+                <td>${escapeHtml(safe(a.severity))}</td>
+                <td>${escapeHtml(safe(a.type))}</td>
+                <td>${escapeHtml(safe(a.rx_port))}</td>
+                <td>${escapeHtml(formatNumber(a.value))}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>` : `<div class="empty-state">No live IXIA alerts available</div>`
+      }
+    </div>
+
+    <div style="margin-top:14px;" class="table-wrap">
+      <div class="table-note">Worst RX ports</div>
+      ${
+        worstRx.length ? `
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>RX Port</th>
+              <th>Switch</th>
+              <th>Switch Port</th>
+              <th>Flows</th>
+              <th>Frame Delta</th>
+              <th>Max Latency (ns)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${worstRx.slice(0, 5).map(r => `
+              <tr>
+                <td>${escapeHtml(safe(r.rx_port || r.port || r.name))}</td>
+                <td>${escapeHtml(safe(r.switch))}</td>
+                <td class="mono-text">${escapeHtml(safe(r.switch_interface))}</td>
+                <td>${escapeHtml(formatNumber(r.flow_count || 0))}</td>
+                <td>${escapeHtml(formatNumber(r.frame_delta || 0))}</td>
+                <td>${escapeHtml(formatNumber(r.max_latency_ns || 0))}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>` : `<div class="empty-state">No worst RX port data available</div>`
+      }
+    </div>
+
+    <div style="margin-top:14px;" class="table-wrap">
+      <div class="table-note">Deep RX hotspots</div>
+      ${
+        deepRx.length ? `
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>RX Port</th>
+              <th>Switch</th>
+              <th>Switch Port</th>
+              <th>Flows</th>
+              <th>ECN-CE RX</th>
+              <th>Max Latency (ns)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${deepRx.slice(0, 5).map(r => `
+              <tr>
+                <td>${escapeHtml(safe(r.rx_port || r.port || r.name))}</td>
+                <td>${escapeHtml(safe(r.switch))}</td>
+                <td class="mono-text">${escapeHtml(safe(r.switch_interface))}</td>
+                <td>${escapeHtml(formatNumber(r.flow_count || 0))}</td>
+                <td>${escapeHtml(formatNumber(r.sum_ecn_ce_rx || 0))}</td>
+                <td>${escapeHtml(formatNumber(r.max_latency_ns || 0))}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>` : `<div class="empty-state">No deep RX hotspot data available</div>`
+      }
+    </div>
+
+    <div style="margin-top:14px;">
+      <details class="details-block">
+        <summary>View raw RoCE / traffic summary</summary>
+        <pre>${escapeHtml(JSON.stringify({ rocev2_summary: rocev2Summary, traffic_summary: trafficSummary }, null, 2))}</pre>
+      </details>
+    </div>
+  `;
+}
+
+function ecmpStatusBadge(kind) {
+  if (kind === "good") {
+    return `<span class="status-mark status-good">✅ Expected</span>`;
+  }
+  if (kind === "warn") {
+    return `<span class="status-mark status-warn">⚠ Mild Deviation</span>`;
+  }
+  return `<span class="status-mark status-bad">❌ Mismatch</span>`;
+}
+
+function ecmpRatioStatus(ratio) {
+  const r = Number(ratio);
+  if (Number.isNaN(r)) return "bad";
+  if (r >= 0.85 && r <= 1.15) return "good";
+  if ((r >= 0.70 && r < 0.85) || (r > 1.15 && r <= 1.50)) return "warn";
+  return "bad";
+}
+
+function ecmpDeltaStatus(preValue, postValue, lowerIsBetter = true) {
+  const pre = Number(preValue);
+  const post = Number(postValue);
+  if (Number.isNaN(pre) || Number.isNaN(post)) return "bad";
+
+  if (lowerIsBetter) {
+    if (post < pre) return "good";
+    if (post === pre) return "warn";
+    return "bad";
+  }
+
+  if (post > pre) return "good";
+  if (post === pre) return "warn";
+  return "bad";
+}
+
+function formatPhaseTimeShort(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm} UTC`;
+}
+init();

@@ -1,0 +1,15 @@
+Connectivity test started: 2026-03-07 14:37:46.424529
+================================================================================
+spine1 10.83.6.28 FAIL: ssh error: No authentication methods available
+spine2 10.83.6.5 FAIL: ssh error: No authentication methods available
+leaf1 10.83.6.3 FAIL: ssh error: No authentication methods available
+leaf2 10.83.6.4 FAIL: ssh error: No authentication methods available
+leaf3 10.83.6.30 FAIL: ssh error: No authentication methods available
+leaf4 10.83.6.25 FAIL: ssh error: No authentication methods available
+leaf5 10.83.6.32 FAIL: ssh error: No authentication methods available
+leaf6 10.83.6.21 FAIL: ssh error: No authentication methods available
+leaf7 10.83.6.9 FAIL: ssh error: No authentication methods available
+================================================================================
+Success: 0
+Fail: 9
+Finished: 2026-03-07 14:37:47.271127

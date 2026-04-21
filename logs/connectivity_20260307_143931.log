@@ -1,0 +1,15 @@
+Connectivity test started: 2026-03-07 14:39:31.673892
+================================================================================
+spine1 10.83.6.28 OK: Hostname: san-q5240-15
+spine2 10.83.6.5 OK: Hostname: san-q5240-q02
+leaf1 10.83.6.3 OK: Hostname: san-q5240-01
+leaf2 10.83.6.4 OK: Hostname: san-q5240-02
+leaf3 10.83.6.30 OK: Hostname: san-q5240-03
+leaf4 10.83.6.25 OK: Hostname: san-q5230-01
+leaf5 10.83.6.32 OK: Hostname: san-q5220-01
+leaf6 10.83.6.21 OK: Hostname: san-q5130-01
+leaf7 10.83.6.9 OK: Hostname: san-q5700-03-re0
+================================================================================
+Success: 9
+Fail: 0
+Finished: 2026-03-07 14:39:38.067515

@@ -1,0 +1,90 @@
+{
+  "profiles": {
+    "fec_only": {
+      "description": "Collect only FEC-related interface telemetry counters",
+      "paths": [
+        "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/corrected-codewords",
+        "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/uncorrectable-codewords"
+      ]
+    },
+    "optics_only": {
+      "description": "Collect Junos native optics telemetry",
+      "paths": [
+        "/junos/system/linecard/optics/"
+      ]
+    },
+    "interface_basic": {
+      "description": "Collect basic interface operational and traffic counters",
+      "paths": [
+        "/interfaces/interface/state/oper-status",
+        "/interfaces/interface/state/counters/carrier-transitions",
+        "/interfaces/interface/state/counters/in-octets",
+        "/interfaces/interface/state/counters/out-octets",
+        "/interfaces/interface/state/counters/in-errors"
+      ]
+    },
+    "interface_ethernet": {
+      "description": "Collect Ethernet-specific interface counters",
+      "paths": [
+        "/interfaces/interface/ethernet/state/counters/in-undersize-frames",
+        "/interfaces/interface/ethernet/state/counters/in-crc-errors",
+        "/interfaces/interface/ethernet/state/counters/in-mac-pause-frames",
+        "/interfaces/interface/ethernet/state/counters/out-mac-pause-frames"
+      ]
+    },
+    "interface_fec_and_basic": {
+      "description": "Collect basic interface counters along with FEC counters",
+      "paths": [
+        "/interfaces/interface/state/oper-status",
+        "/interfaces/interface/state/counters/carrier-transitions",
+        "/interfaces/interface/state/counters/in-octets",
+        "/interfaces/interface/state/counters/out-octets",
+        "/interfaces/interface/state/counters/in-errors",
+        "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/corrected-codewords",
+        "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/uncorrectable-codewords"
+      ]
+    },
+    "interface_and_optics": {
+      "description": "Collect interface operational counters together with optics telemetry",
+      "paths": [
+        "/interfaces/interface/state/oper-status",
+        "/interfaces/interface/state/counters/carrier-transitions",
+        "/interfaces/interface/state/counters/in-octets",
+        "/interfaces/interface/state/counters/out-octets",
+        "/interfaces/interface/state/counters/in-errors",
+        "/junos/system/linecard/optics/"
+      ]
+    },
+    "full_interface_health": {
+      "description": "Collect interface, Ethernet, FEC, and optics telemetry for health validation",
+      "paths": [
+        "/interfaces/interface/state/oper-status",
+        "/interfaces/interface/state/counters/carrier-transitions",
+        "/interfaces/interface/state/counters/in-octets",
+        "/interfaces/interface/state/counters/out-octets",
+        "/interfaces/interface/state/counters/in-errors",
+        "/interfaces/interface/ethernet/state/counters/in-undersize-frames",
+        "/interfaces/interface/ethernet/state/counters/in-crc-errors",
+        "/interfaces/interface/ethernet/state/counters/in-mac-pause-frames",
+        "/interfaces/interface/ethernet/state/counters/out-mac-pause-frames",
+        "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/corrected-codewords",
+        "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/uncorrectable-codewords",
+        "/junos/system/linecard/optics/"
+      ]
+    },
+    "hotspot_congestion_qmon": {
+        "description": "Collect hotspot-focused interface, pause, FEC, qmon, and optics telemetry",
+        "paths": [
+          "/interfaces/interface/state/oper-status",
+          "/interfaces/interface/state/counters/carrier-transitions",
+          "/interfaces/interface/state/counters/in-octets",
+          "/interfaces/interface/state/counters/out-octets",
+          "/interfaces/interface/state/counters/in-errors",
+          "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/corrected-codewords",
+          "/interfaces/interface/ethernet/phys/phy/ingress/fec/state/uncorrectable-codewords",
+          "/qos/interfaces/interface/output/queues/queue/state/",
+          "/junos/system/linecard/optics/"
+       ]
+    }
+  }
+}

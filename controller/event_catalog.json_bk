@@ -1,0 +1,27 @@
+{
+  "events": [
+    {
+      "name": "traffic_stop",
+      "type": "ixia",
+      "action": "traffic_stop",
+      "settle": 3
+    },
+    {
+      "name": "traffic_start",
+      "type": "ixia",
+      "action": "traffic_start",
+      "settle": 5
+    },
+    {
+      "name": "scale_toggle",
+      "type": "ixia",
+      "action": "network_group_scale_toggle",
+      "topology": "Topology 15",
+      "network_group": "Network Group 1",
+      "low": 100000,
+      "high": 200000,
+      "cycles": 1,
+      "settle": 30
+    }
+  ]
+}

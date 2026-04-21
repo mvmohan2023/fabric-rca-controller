@@ -1,0 +1,208 @@
+# controller/telemetry_targets.py
+
+import json
+import os
+from typing import Any, Dict, List, Set, Optional
+
+
+DEFAULT_TOPOLOGY_PATH = os.path.join("artifacts", "topology", "topology_discovery.json")
+
+
+def load_json_file(path: str) -> Dict[str, Any]:
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def normalize_node(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def extract_topology_links(topology_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Expected flexible formats:
+    {
+      "links": [
+        {
+          "local_node": "leaf1",
+          "local_intf": "et-0/0/4",
+          "peer_node": "spine1",
+          "peer_intf": "et-0/0/0"
+        }
+      ]
+    }
+
+    or similar variants using:
+      node / interface / peer / peer_interface
+    """
+    links = topology_data.get("links", [])
+    if not isinstance(links, list):
+        return []
+    return [item for item in links if isinstance(item, dict)]
+
+
+def normalize_interface_name(interface_name: str) -> str:
+    """
+    For now, convert physical et-* to channelized :1 if not already present.
+    Adjust later if topology/facts already contain logical lane names.
+    """
+    name = (interface_name or "").strip()
+    if not name:
+        return name
+
+    if ":" in name:
+        return name
+
+    if name.startswith("et-"):
+        return f"{name}:1"
+
+    return name
+
+
+def build_fabric_interface_map(
+    topology_data: Dict[str, Any],
+    selected_nodes: List[str],
+) -> Dict[str, List[str]]:
+    selected = {normalize_node(node) for node in selected_nodes}
+    result: Dict[str, Set[str]] = {normalize_node(node): set() for node in selected_nodes}
+
+    for link in extract_topology_links(topology_data):
+        local_node = normalize_node(
+            link.get("local_node") or link.get("node") or link.get("device")
+        )
+        local_intf = (
+            link.get("local_intf")
+            or link.get("interface")
+            or link.get("local_interface")
+        )
+
+        peer_node = normalize_node(
+            link.get("peer_node") or link.get("peer") or link.get("remote_node")
+        )
+        peer_intf = (
+            link.get("peer_intf")
+            or link.get("peer_interface")
+            or link.get("remote_interface")
+        )
+
+        if local_node in selected and local_intf:
+            result.setdefault(local_node, set()).add(normalize_interface_name(local_intf))
+
+        if peer_node in selected and peer_intf:
+            result.setdefault(peer_node, set()).add(normalize_interface_name(peer_intf))
+
+    return {
+        node: sorted(list(interfaces))
+        for node, interfaces in result.items()
+        if interfaces
+    }
+
+
+def load_topology(topology_path: str) -> Dict[str, Any]:
+    if not topology_path or not os.path.exists(topology_path):
+        return {}
+    return load_json_file(topology_path)
+
+
+def resolve_interfaces_for_nodes(
+    topology_path: str,
+    selected_nodes: List[str],
+) -> Dict[str, List[str]]:
+    topology_data = load_topology(topology_path)
+    if not topology_data:
+        return {}
+    return build_fabric_interface_map(topology_data=topology_data, selected_nodes=selected_nodes)
+
+from typing import Dict, List, Optional
+
+
+def resolve_recovery_interfaces_for_bounce(
+    topology_path: str,
+    selected_nodes: List[str],
+    bounced_node: Optional[str] = None,
+    bounced_interface: Optional[str] = None,
+) -> Dict[str, List[str]]:
+    """
+    Recovery interface resolution for ECMP analysis.
+
+    Keeps legacy resolve_interfaces_for_nodes() untouched.
+
+    Behavior:
+    - non-bounced nodes keep their default fabric interface list
+    - bounced node uses ALL topology-resolved fabric interfaces on that node
+    - bounced interface is inserted first if not already present
+    """
+    base_map = resolve_interfaces_for_nodes(
+        topology_path=topology_path,
+        selected_nodes=selected_nodes,
+    )
+
+    narrowed: Dict[str, List[str]] = {}
+
+    for node in selected_nodes:
+        base_interfaces = (
+            list(base_map.get(node, []))
+            or list(base_map.get(node.lower(), []))
+        )
+
+        # default fallback for non-bounced nodes
+        narrowed[node] = base_interfaces
+
+        if not bounced_node or node.lower() != bounced_node.lower():
+            continue
+
+        if not bounced_interface:
+            continue
+
+        related: List[str] = list(base_interfaces)
+
+        if bounced_interface not in related:
+            print(
+                f"[RECOVERY-IF-RESOLVE] bounced interface {bounced_interface} "
+                f"not found in topology-resolved fabric interfaces for node={node}; "
+                f"adding it explicitly"
+            )
+            related.insert(0, bounced_interface)
+        else:
+            # move bounced interface to front for readability/debug
+            related = [bounced_interface] + [x for x in related if x != bounced_interface]
+
+        deduped: List[str] = []
+        seen = set()
+        for iface in related:
+            if iface not in seen:
+                deduped.append(iface)
+                seen.add(iface)
+
+        narrowed[node] = deduped
+
+        print(
+            f"[RECOVERY-IF-RESOLVE] node={node} bounced_interface={bounced_interface} "
+            f"resolved_recovery_interfaces={narrowed[node]}"
+        )
+
+    return narrowed
+
+def is_related_recovery_interface(
+    reference_interface: str,
+    candidate_interface: str,
+) -> bool:
+    """
+    Minimal safe heuristic for first version.
+
+    Today:
+    - keep interfaces of the same high-speed family (for example et-*)
+    - exclude the exact same interface check handled by caller
+
+    Later:
+    - replace with exact ECMP-member discovery using richer topology metadata
+    """
+    if not reference_interface or not candidate_interface:
+        return False
+
+    ref_prefix = reference_interface.split("-")[0]
+    cand_prefix = candidate_interface.split("-")[0]
+
+    if ref_prefix != cand_prefix:
+        return False
+
+    return True

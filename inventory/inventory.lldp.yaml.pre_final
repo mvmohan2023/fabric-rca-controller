@@ -1,0 +1,951 @@
+lab:
+  name: evo_fabric_lab
+  controller:
+    hostname: san-jvision-01
+defaults:
+  username: root
+  password: Embe1mpls
+  port: 22
+  os: junos
+  timeout: 30
+nodes:
+  spine1:
+    hostname: san-q5240-15
+    mgmt_ip: 10.83.6.28
+    role: spine
+    platform: qfx5240
+    asn: 4200000001
+    router_id: 1.0.0.1
+    interfaces:
+      et-0/0/16:
+        ipv4: 1.0.11.0/31
+        ipv6: 2001::1:0:11:0/127
+      et-0/0/17:
+        ipv4: 1.0.11.2/31
+        ipv6: 2001::1:0:11:2/127
+      et-0/0/18:
+        ipv4: 1.0.12.0/31
+        ipv6: 2001::1:0:12:0/127
+      et-0/0/19:
+        ipv4: 1.0.12.2/31
+        ipv6: 2001::1:0:12:2/127
+      et-0/0/20:0:
+        ipv4: 1.0.13.0/31
+        ipv6: 2001::1:0:13:0/127
+        peer_device: leaf3
+        peer_interface: et-0/0/20:0
+      et-0/0/20:1:
+        ipv4: 1.0.13.2/31
+        ipv6: 2001::1:0:13:2/127
+        peer_device: leaf3
+        peer_interface: et-0/0/20:1
+      et-0/0/20:2:
+        ipv4: 1.0.13.4/31
+        ipv6: 2001::1:0:13:4/127
+        peer_device: leaf3
+        peer_interface: et-0/0/20:2
+      et-0/0/20:3:
+        ipv4: 1.0.13.6/31
+        ipv6: 2001::1:0:13:6/127
+        peer_device: leaf3
+        peer_interface: et-0/0/20:3
+      et-0/0/20:4:
+        ipv4: 1.0.13.8/31
+        ipv6: 2001::1:0:13:8/127
+        peer_device: leaf3
+        peer_interface: et-0/0/20:4
+      et-0/0/20:5:
+        ipv4: 1.0.13.10/31
+        ipv6: 2001::1:0:13:10/127
+        peer_device: leaf3
+        peer_interface: et-0/0/20:5
+      et-0/0/20:6:
+        ipv4: 1.0.13.12/31
+        ipv6: 2001::1:0:13:12/127
+        peer_device: leaf3
+        peer_interface: et-0/0/20:6
+      et-0/0/20:7:
+        ipv4: 1.0.13.14/31
+        ipv6: 2001::1:0:13:14/127
+        peer_device: leaf3
+        peer_interface: et-0/0/20:7
+      et-0/0/30:0:
+        ipv4: 1.0.14.0/31
+        ipv6: 2001::1:0:14:0/127
+        peer_device: leaf4
+        peer_interface: et-0/0/50:0
+      et-0/0/30:1:
+        ipv4: 1.0.14.2/31
+        ipv6: 2001::1:0:14:2/127
+        peer_device: leaf4
+        peer_interface: et-0/0/50:1
+      et-0/0/30:2:
+        ipv4: 1.0.14.4/31
+        ipv6: 2001::1:0:14:4/127
+        peer_device: leaf4
+        peer_interface: et-0/0/50:2
+      et-0/0/30:3:
+        ipv4: 1.0.14.6/31
+        ipv6: 2001::1:0:14:6/127
+        peer_device: leaf4
+        peer_interface: et-0/0/50:3
+      et-0/0/30:4:
+        ipv4: 1.0.14.8/31
+        ipv6: 2001::1:0:14:8/127
+      et-0/0/30:5:
+        ipv4: 1.0.14.10/31
+        ipv6: 2001::1:0:14:10/127
+        peer_device: leaf5
+        peer_interface: et-0/0/30:1
+      et-0/0/30:6:
+        ipv4: 1.0.14.12/31
+        ipv6: 2001::1:0:14:12/127
+        peer_device: leaf5
+        peer_interface: et-0/0/30:2
+      et-0/0/30:7:
+        ipv4: 1.0.14.14/31
+        ipv6: 2001::1:0:14:14/127
+        peer_device: leaf5
+        peer_interface: et-0/0/30:3
+      et-0/0/40:0:
+        ipv4: 1.0.15.0/31
+        ipv6: 2001::1:0:15:0/127
+      et-0/0/40:1:
+        ipv4: 1.0.15.2/31
+        ipv6: 2001::1:0:15:2/127
+      et-0/0/40:2:
+        ipv4: 1.0.15.4/31
+        ipv6: 2001::1:0:15:4/127
+      et-0/0/40:3:
+        ipv4: 1.0.15.6/31
+        ipv6: 2001::1:0:15:6/127
+      et-0/0/40:4:
+        ipv4: 1.0.15.8/31
+        ipv6: 2001::1:0:15:8/127
+      et-0/0/50:0:
+        ipv4: 1.0.16.0/31
+        ipv6: 2001::1:0:16:0/127
+      et-0/0/50:1:
+        ipv4: 1.0.16.2/31
+        ipv6: 2001::1:0:16:2/127
+      et-0/0/50:2:
+        ipv4: 1.0.16.4/31
+        ipv6: 2001::1:0:16:4/127
+      et-0/0/50:3:
+        ipv4: 1.0.16.6/31
+        ipv6: 2001::1:0:16:6/127
+      et-0/0/50:4:
+        ipv4: 1.0.16.8/31
+        ipv6: 2001::1:0:16:8/127
+      et-0/0/60:0:
+        ipv4: 1.0.17.0/31
+        ipv6: 2001::1:0:17:0/127
+        peer_device: leaf2
+        peer_interface: et-0/0/60:0
+      et-0/0/60:1:
+        ipv4: 1.0.17.2/31
+        ipv6: 2001::1:0:17:2/127
+        peer_device: leaf2
+        peer_interface: et-0/0/60:1
+      et-0/0/60:2:
+        ipv4: 1.0.17.4/31
+        ipv6: 2001::1:0:17:4/127
+        peer_device: leaf2
+        peer_interface: et-0/0/60:2
+      et-0/0/60:3:
+        ipv4: 1.0.17.6/31
+        ipv6: 2001::1:0:17:6/127
+        peer_device: leaf2
+        peer_interface: et-0/0/60:3
+      et-0/0/60:4:
+        ipv4: 1.0.17.8/31
+        ipv6: 2001::1:0:17:8/127
+        peer_device: leaf2
+        peer_interface: et-0/0/60:4
+      et-0/0/1:
+        ipv4: 2.201.0.254/24
+        ipv6: 2002::2:201:0:254/112
+  spine2:
+    hostname: san-q5240-q02
+    mgmt_ip: 10.83.6.5
+    role: spine
+    platform: qfx5240
+    asn: 4200000002
+    router_id: 1.0.0.2
+    interfaces:
+      et-0/0/16:
+        ipv4: 1.0.21.0/31
+        ipv6: 2001::1:0:21:0/127
+        peer_device: leaf1
+        peer_interface: et-0/0/12:0
+      et-0/0/17:
+        ipv4: 1.0.21.2/31
+        ipv6: 2001::1:0:21:2/127
+        peer_device: leaf1
+        peer_interface: et-0/0/12:1
+      et-0/0/60:0:
+        ipv4: 1.0.21.4/31
+        ipv6: 2001::1:0:21:4/127
+      et-0/0/60:1:
+        ipv4: 1.0.21.6/31
+        ipv6: 2001::1:0:21:6/127
+      et-0/0/60:2:
+        ipv4: 1.0.21.8/31
+        ipv6: 2001::1:0:21:8/127
+      et-0/0/60:3:
+        ipv4: 1.0.21.10/31
+        ipv6: 2001::1:0:21:10/127
+      et-0/0/60:4:
+        ipv4: 1.0.21.12/31
+        ipv6: 2001::1:0:21:12/127
+      et-0/0/60:5:
+        ipv4: 1.0.21.14/31
+        ipv6: 2001::1:0:21:14/127
+      et-0/0/60:6:
+        ipv4: 1.0.21.16/31
+        ipv6: 2001::1:0:21:16/127
+      et-0/0/60:7:
+        ipv4: 1.0.21.18/31
+        ipv6: 2001::1:0:21:18/127
+      et-0/0/22:
+        ipv4: 1.0.22.0/31
+        ipv6: 2001::1:0:22:0/127
+        peer_device: leaf2
+        peer_interface: et-0/0/22:0
+      et-0/0/23:
+        ipv4: 1.0.22.2/31
+        ipv6: 2001::1:0:22:2/127
+        peer_device: leaf2
+        peer_interface: et-0/0/22:1
+      et-0/0/40:0:
+        ipv4: 1.0.22.4/31
+        ipv6: 2001::1:0:22:4/127
+      et-0/0/40:1:
+        ipv4: 1.0.22.6/31
+        ipv6: 2001::1:0:22:6/127
+      et-0/0/40:2:
+        ipv4: 1.0.22.8/31
+        ipv6: 2001::1:0:22:8/127
+      et-0/0/40:3:
+        ipv4: 1.0.22.10/31
+        ipv6: 2001::1:0:22:10/127
+      et-0/0/40:4:
+        ipv4: 1.0.22.12/31
+        ipv6: 2001::1:0:22:12/127
+      et-0/0/40:5:
+        ipv4: 1.0.22.14/31
+        ipv6: 2001::1:0:22:14/127
+      et-0/0/40:6:
+        ipv4: 1.0.22.16/31
+        ipv6: 2001::1:0:22:16/127
+      et-0/0/40:7:
+        ipv4: 1.0.22.18/31
+        ipv6: 2001::1:0:22:18/127
+      et-0/0/32:
+        ipv4: 1.0.23.0/31
+        ipv6: 2001::1:0:23:0/127
+        peer_device: leaf3
+        peer_interface: et-0/0/32:0
+      et-0/0/33:
+        ipv4: 1.0.23.2/31
+        ipv6: 2001::1:0:23:2/127
+        peer_device: leaf3
+        peer_interface: et-0/0/32:1
+      et-0/0/50:0:
+        ipv4: 1.0.23.4/31
+        ipv6: 2001::1:0:23:4/127
+        peer_device: leaf3
+        peer_interface: et-0/0/50:0
+      et-0/0/50:1:
+        ipv4: 1.0.23.6/31
+        ipv6: 2001::1:0:23:6/127
+        peer_device: leaf3
+        peer_interface: et-0/0/50:1
+      et-0/0/50:2:
+        ipv4: 1.0.23.8/31
+        ipv6: 2001::1:0:23:8/127
+        peer_device: leaf3
+        peer_interface: et-0/0/50:2
+      et-0/0/50:3:
+        ipv4: 1.0.23.10/31
+        ipv6: 2001::1:0:23:10/127
+        peer_device: leaf3
+        peer_interface: et-0/0/50:3
+      et-0/0/50:4:
+        ipv4: 1.0.23.12/31
+        ipv6: 2001::1:0:23:12/127
+      et-0/0/50:5:
+        ipv4: 1.0.23.14/31
+        ipv6: 2001::1:0:23:14/127
+      et-0/0/50:6:
+        ipv4: 1.0.23.16/31
+        ipv6: 2001::1:0:23:16/127
+      et-0/0/50:7:
+        ipv4: 1.0.23.18/31
+        ipv6: 2001::1:0:23:18/127
+      et-0/0/48:0:
+        ipv4: 1.0.24.0/31
+        ipv6: 2001::1:0:24:0/127
+        peer_device: leaf4
+        peer_interface: et-0/0/48
+      et-0/0/48:1:
+        ipv4: 1.0.24.2/31
+        ipv6: 2001::1:0:24:2/127
+        peer_device: leaf4
+        peer_interface: et-0/0/49
+      et-0/0/20:0:
+        ipv4: 1.0.24.4/31
+        ipv6: 2001::1:0:24:4/127
+        peer_device: leaf4
+        peer_interface: et-0/0/20:0
+      et-0/0/20:1:
+        ipv4: 1.0.24.6/31
+        ipv6: 2001::1:0:24:6/127
+        peer_device: leaf4
+        peer_interface: et-0/0/20:1
+      et-0/0/20:2:
+        ipv4: 1.0.24.8/31
+        ipv6: 2001::1:0:24:8/127
+        peer_device: leaf4
+        peer_interface: et-0/0/20:2
+      et-0/0/20:3:
+        ipv4: 1.0.24.10/31
+        ipv6: 2001::1:0:24:10/127
+        peer_device: leaf4
+        peer_interface: et-0/0/20:3
+      et-0/0/58:0:
+        ipv4: 1.0.25.0/31
+        ipv6: 2001::1:0:25:0/127
+        peer_device: leaf5
+        peer_interface: et-0/0/25
+      et-0/0/20:4:
+        ipv4: 1.0.25.2/31
+        ipv6: 2001::1:0:25:2/127
+        peer_device: leaf5
+        peer_interface: et-0/0/10:0
+      et-0/0/20:5:
+        ipv4: 1.0.25.4/31
+        ipv6: 2001::1:0:25:4/127
+        peer_device: leaf5
+        peer_interface: et-0/0/10:1
+      et-0/0/20:6:
+        ipv4: 1.0.25.6/31
+        ipv6: 2001::1:0:25:6/127
+        peer_device: leaf5
+        peer_interface: et-0/0/10:2
+      et-0/0/20:7:
+        ipv4: 1.0.25.8/31
+        ipv6: 2001::1:0:25:8/127
+        peer_device: leaf5
+        peer_interface: et-0/0/10:3
+      et-0/0/62:
+        ipv4: 1.0.26.0/31
+        ipv6: 2001::1:0:26:0/127
+        peer_device: leaf6
+        peer_interface: et-0/0/26
+      et-0/0/30:0:
+        ipv4: 1.0.26.2/31
+        ipv6: 2001::1:0:26:2/127
+        peer_device: leaf6
+        peer_interface: et-0/0/30:0
+      et-0/0/30:1:
+        ipv4: 1.0.26.4/31
+        ipv6: 2001::1:0:26:4/127
+        peer_device: leaf6
+        peer_interface: et-0/0/30:1
+      et-0/0/30:2:
+        ipv4: 1.0.26.6/31
+        ipv6: 2001::1:0:26:6/127
+        peer_device: leaf6
+        peer_interface: et-0/0/30:2
+      et-0/0/30:3:
+        ipv4: 1.0.26.8/31
+        ipv6: 2001::1:0:26:8/127
+        peer_device: leaf6
+        peer_interface: et-0/0/30:3
+      et-0/0/8:0:
+        ipv4: 1.0.26.10/31
+        ipv6: 2001::1:0:26:10/127
+        peer_device: leaf6
+        peer_interface: et-0/0/6:0
+      et-0/0/8:1:
+        ipv4: 1.0.26.12/31
+        ipv6: 2001::1:0:26:12/127
+        peer_device: leaf6
+        peer_interface: et-0/0/6:1
+      et-0/0/8:2:
+        ipv4: 1.0.26.14/31
+        ipv6: 2001::1:0:26:14/127
+        peer_device: leaf6
+        peer_interface: et-0/0/6:2
+      et-0/0/8:3:
+        ipv4: 1.0.26.16/31
+        ipv6: 2001::1:0:26:16/127
+        peer_device: leaf6
+        peer_interface: et-0/0/6:3
+      et-0/0/10:
+        ipv4: 1.0.26.18/31
+        ipv6: 2001::1:0:26:18/127
+        peer_device: leaf6
+        peer_interface: et-0/0/8
+      et-0/0/58:1:
+        ipv4: 1.0.27.0/31
+        ipv6: 2001::1:0:27:0/127
+        peer_device: leaf7
+        peer_interface: et-6/0/1
+      et-0/0/0:0:
+        ipv4: 1.0.27.2/31
+        ipv6: 2001::1:0:27:2/127
+        peer_device: leaf7
+        peer_interface: et-7/0/8
+      et-0/0/0:1:
+        ipv4: 1.0.27.4/31
+        ipv6: 2001::1:0:27:4/127
+        peer_device: leaf7
+        peer_interface: et-7/0/9
+      et-0/0/0:2:
+        ipv4: 1.0.27.6/31
+        ipv6: 2001::1:0:27:6/127
+        peer_device: leaf7
+        peer_interface: et-7/0/10
+      et-0/0/0:3:
+        ipv4: 1.0.27.8/31
+        ipv6: 2001::1:0:27:8/127
+        peer_device: leaf7
+        peer_interface: et-7/0/11
+      et-0/0/1:
+        ipv4: 2.202.0.254/24
+        ipv6: 2002::2:202:0:254/112
+  leaf1:
+    hostname: san-q5240-01
+    mgmt_ip: 10.83.6.3
+    role: leaf
+    platform: qfx5240
+    asn: 4200000011
+    router_id: 1.0.1.1
+    interfaces:
+      et-0/0/11:0:
+        ipv4: 1.0.11.1/31
+        ipv6: 2001::1:0:11:1/127
+      et-0/0/11:1:
+        ipv4: 1.0.11.3/31
+        ipv6: 2001::1:0:11:3/127
+      et-0/0/40:0:
+        ipv4: 1.0.11.5/31
+        ipv6: 2001::1:0:11:5/127
+      et-0/0/40:1:
+        ipv4: 1.0.11.7/31
+        ipv6: 2001::1:0:11:7/127
+      et-0/0/40:2:
+        ipv4: 1.0.11.9/31
+        ipv6: 2001::1:0:11:9/127
+      et-0/0/40:3:
+        ipv4: 1.0.11.11/31
+        ipv6: 2001::1:0:11:11/127
+      et-0/0/40:4:
+        ipv4: 1.0.11.13/31
+        ipv6: 2001::1:0:11:13/127
+      et-0/0/40:5:
+        ipv4: 1.0.11.15/31
+        ipv6: 2001::1:0:11:15/127
+      et-0/0/40:6:
+        ipv4: 1.0.11.17/31
+        ipv6: 2001::1:0:11:17/127
+      et-0/0/40:7:
+        ipv4: 1.0.11.19/31
+        ipv6: 2001::1:0:11:19/127
+      et-0/0/12:0:
+        ipv4: 1.0.21.1/31
+        ipv6: 2001::1:0:21:1/127
+        peer_device: spine2
+        peer_interface: et-0/0/16
+      et-0/0/12:1:
+        ipv4: 1.0.21.3/31
+        ipv6: 2001::1:0:21:3/127
+        peer_device: spine2
+        peer_interface: et-0/0/17
+      et-0/0/60:0:
+        ipv4: 1.0.21.5/31
+        ipv6: 2001::1:0:21:5/127
+      et-0/0/60:1:
+        ipv4: 1.0.21.7/31
+        ipv6: 2001::1:0:21:7/127
+      et-0/0/60:2:
+        ipv4: 1.0.21.9/31
+        ipv6: 2001::1:0:21:9/127
+      et-0/0/60:3:
+        ipv4: 1.0.21.11/31
+        ipv6: 2001::1:0:21:11/127
+      et-0/0/60:4:
+        ipv4: 1.0.21.13/31
+        ipv6: 2001::1:0:21:13/127
+      et-0/0/60:5:
+        ipv4: 1.0.21.15/31
+        ipv6: 2001::1:0:21:15/127
+      et-0/0/60:6:
+        ipv4: 1.0.21.17/31
+        ipv6: 2001::1:0:21:17/127
+      et-0/0/60:7:
+        ipv4: 1.0.21.19/31
+        ipv6: 2001::1:0:21:19/127
+      et-0/0/0:1:
+        ipv4: 2.1.111.254/24
+        ipv6: 2002::2:1:111:254/112
+  leaf2:
+    hostname: san-q5240-02
+    mgmt_ip: 10.83.6.4
+    role: leaf
+    platform: qfx5240
+    asn: 4200000012
+    router_id: 1.0.1.2
+    interfaces:
+      et-0/0/19:0:
+        ipv4: 1.0.12.1/31
+        ipv6: 2001::1:0:12:1/127
+      et-0/0/19:1:
+        ipv4: 1.0.12.3/31
+        ipv6: 2001::1:0:12:3/127
+      et-0/0/60:0:
+        ipv4: 1.0.12.5/31
+        ipv6: 2001::1:0:12:5/127
+        peer_device: spine1
+        peer_interface: et-0/0/60:0
+      et-0/0/60:1:
+        ipv4: 1.0.12.7/31
+        ipv6: 2001::1:0:12:7/127
+        peer_device: spine1
+        peer_interface: et-0/0/60:1
+      et-0/0/60:2:
+        ipv4: 1.0.12.9/31
+        ipv6: 2001::1:0:12:9/127
+        peer_device: spine1
+        peer_interface: et-0/0/60:2
+      et-0/0/60:3:
+        ipv4: 1.0.12.11/31
+        ipv6: 2001::1:0:12:11/127
+        peer_device: spine1
+        peer_interface: et-0/0/60:3
+      et-0/0/60:4:
+        ipv4: 1.0.12.13/31
+        ipv6: 2001::1:0:12:13/127
+        peer_device: spine1
+        peer_interface: et-0/0/60:4
+      et-0/0/60:5:
+        ipv4: 1.0.12.15/31
+        ipv6: 2001::1:0:12:15/127
+      et-0/0/60:6:
+        ipv4: 1.0.12.17/31
+        ipv6: 2001::1:0:12:17/127
+      et-0/0/60:7:
+        ipv4: 1.0.12.19/31
+        ipv6: 2001::1:0:12:19/127
+      et-0/0/22:0:
+        ipv4: 1.0.22.1/31
+        ipv6: 2001::1:0:22:1/127
+        peer_device: spine2
+        peer_interface: et-0/0/22
+      et-0/0/22:1:
+        ipv4: 1.0.22.3/31
+        ipv6: 2001::1:0:22:3/127
+        peer_device: spine2
+        peer_interface: et-0/0/23
+      et-0/0/40:0:
+        ipv4: 1.0.22.5/31
+        ipv6: 2001::1:0:22:5/127
+      et-0/0/40:1:
+        ipv4: 1.0.22.7/31
+        ipv6: 2001::1:0:22:7/127
+      et-0/0/40:2:
+        ipv4: 1.0.22.9/31
+        ipv6: 2001::1:0:22:9/127
+      et-0/0/40:3:
+        ipv4: 1.0.22.11/31
+        ipv6: 2001::1:0:22:11/127
+      et-0/0/40:4:
+        ipv4: 1.0.22.13/31
+        ipv6: 2001::1:0:22:13/127
+      et-0/0/40:5:
+        ipv4: 1.0.22.15/31
+        ipv6: 2001::1:0:22:15/127
+      et-0/0/40:6:
+        ipv4: 1.0.22.17/31
+        ipv6: 2001::1:0:22:17/127
+      et-0/0/40:7:
+        ipv4: 1.0.22.19/31
+        ipv6: 2001::1:0:22:19/127
+      et-0/0/19:0-test:
+        ipv4: 69.0.0.9/24
+  leaf3:
+    hostname: san-q5240-03
+    mgmt_ip: 10.83.6.30
+    role: leaf
+    platform: qfx5240
+    asn: 4200000013
+    router_id: 1.0.1.3
+    interfaces:
+      et-0/0/31:0:
+        ipv4: 1.0.13.1/31
+        ipv6: 2001::1:0:13:1/127
+      et-0/0/31:1:
+        ipv4: 1.0.13.3/31
+        ipv6: 2001::1:0:13:3/127
+      et-0/0/20:0:
+        ipv4: 1.0.13.5/31
+        ipv6: 2001::1:0:13:5/127
+        peer_device: spine1
+        peer_interface: et-0/0/20:0
+      et-0/0/20:1:
+        ipv4: 1.0.13.7/31
+        ipv6: 2001::1:0:13:7/127
+        peer_device: spine1
+        peer_interface: et-0/0/20:1
+      et-0/0/20:2:
+        ipv4: 1.0.13.9/31
+        ipv6: 2001::1:0:13:9/127
+        peer_device: spine1
+        peer_interface: et-0/0/20:2
+      et-0/0/20:3:
+        ipv4: 1.0.13.11/31
+        ipv6: 2001::1:0:13:11/127
+        peer_device: spine1
+        peer_interface: et-0/0/20:3
+      et-0/0/20:4:
+        ipv4: 1.0.13.13/31
+        ipv6: 2001::1:0:13:13/127
+        peer_device: spine1
+        peer_interface: et-0/0/20:4
+      et-0/0/20:5:
+        ipv4: 1.0.13.15/31
+        ipv6: 2001::1:0:13:15/127
+        peer_device: spine1
+        peer_interface: et-0/0/20:5
+      et-0/0/20:6:
+        ipv4: 1.0.13.17/31
+        ipv6: 2001::1:0:13:17/127
+        peer_device: spine1
+        peer_interface: et-0/0/20:6
+      et-0/0/20:7:
+        ipv4: 1.0.13.19/31
+        ipv6: 2001::1:0:13:19/127
+        peer_device: spine1
+        peer_interface: et-0/0/20:7
+      et-0/0/32:0:
+        ipv4: 1.0.23.1/31
+        ipv6: 2001::1:0:23:1/127
+        peer_device: spine2
+        peer_interface: et-0/0/32
+      et-0/0/32:1:
+        ipv4: 1.0.23.3/31
+        ipv6: 2001::1:0:23:3/127
+        peer_device: spine2
+        peer_interface: et-0/0/33
+      et-0/0/50:0:
+        ipv4: 1.0.23.5/31
+        ipv6: 2001::1:0:23:5/127
+        peer_device: spine2
+        peer_interface: et-0/0/50:0
+      et-0/0/50:1:
+        ipv4: 1.0.23.7/31
+        ipv6: 2001::1:0:23:7/127
+        peer_device: spine2
+        peer_interface: et-0/0/50:1
+      et-0/0/50:2:
+        ipv4: 1.0.23.9/31
+        ipv6: 2001::1:0:23:9/127
+        peer_device: spine2
+        peer_interface: et-0/0/50:2
+      et-0/0/50:3:
+        ipv4: 1.0.23.11/31
+        ipv6: 2001::1:0:23:11/127
+        peer_device: spine2
+        peer_interface: et-0/0/50:3
+      et-0/0/50:4:
+        ipv4: 1.0.23.13/31
+        ipv6: 2001::1:0:23:13/127
+      et-0/0/50:5:
+        ipv4: 1.0.23.15/31
+        ipv6: 2001::1:0:23:15/127
+      et-0/0/50:6:
+        ipv4: 1.0.23.17/31
+        ipv6: 2001::1:0:23:17/127
+      et-0/0/50:7:
+        ipv4: 1.0.23.19/31
+        ipv6: 2001::1:0:23:19/127
+      et-0/0/0:1:
+        ipv4: 2.3.111.254/24
+        ipv6: 2002::2:3:111:254/112
+  leaf4:
+    hostname: san-q5230-01
+    mgmt_ip: 10.83.6.25
+    role: leaf
+    platform: qfx5230
+    asn: 4200000014
+    router_id: 1.0.1.4
+    interfaces:
+      et-0/0/51:
+        ipv4: 1.0.14.1/31
+        ipv6: 2001::1:0:14:1/127
+      et-0/0/52:
+        ipv4: 1.0.14.3/31
+        ipv6: 2001::1:0:14:3/127
+      et-0/0/50:0:
+        ipv4: 1.0.14.5/31
+        ipv6: 2001::1:0:14:5/127
+        peer_device: spine1
+        peer_interface: et-0/0/30:0
+      et-0/0/50:1:
+        ipv4: 1.0.14.7/31
+        ipv6: 2001::1:0:14:7/127
+        peer_device: spine1
+        peer_interface: et-0/0/30:1
+      et-0/0/50:2:
+        ipv4: 1.0.14.9/31
+        ipv6: 2001::1:0:14:9/127
+        peer_device: spine1
+        peer_interface: et-0/0/30:2
+      et-0/0/50:3:
+        ipv4: 1.0.14.11/31
+        ipv6: 2001::1:0:14:11/127
+        peer_device: spine1
+        peer_interface: et-0/0/30:3
+      et-0/0/50:4:
+        ipv4: 1.0.14.13/31
+        ipv6: 2001::1:0:14:13/127
+      et-0/0/50:5:
+        ipv4: 1.0.14.15/31
+        ipv6: 2001::1:0:14:15/127
+      et-0/0/50:6:
+        ipv4: 1.0.14.17/31
+        ipv6: 2001::1:0:14:17/127
+      et-0/0/50:7:
+        ipv4: 1.0.14.19/31
+        ipv6: 2001::1:0:14:19/127
+      et-0/0/48:
+        ipv4: 1.0.24.1/31
+        ipv6: 2001::1:0:24:1/127
+        peer_device: spine2
+        peer_interface: et-0/0/48:0
+      et-0/0/49:
+        ipv4: 1.0.24.3/31
+        ipv6: 2001::1:0:24:3/127
+        peer_device: spine2
+        peer_interface: et-0/0/48:1
+      et-0/0/20:0:
+        ipv4: 1.0.24.5/31
+        ipv6: 2001::1:0:24:5/127
+        peer_device: spine2
+        peer_interface: et-0/0/20:0
+      et-0/0/20:1:
+        ipv4: 1.0.24.7/31
+        ipv6: 2001::1:0:24:7/127
+        peer_device: spine2
+        peer_interface: et-0/0/20:1
+      et-0/0/20:2:
+        ipv4: 1.0.24.9/31
+        ipv6: 2001::1:0:24:9/127
+        peer_device: spine2
+        peer_interface: et-0/0/20:2
+      et-0/0/20:3:
+        ipv4: 1.0.24.11/31
+        ipv6: 2001::1:0:24:11/127
+        peer_device: spine2
+        peer_interface: et-0/0/20:3
+      et-0/0/20:4:
+        ipv4: 1.0.24.13/31
+        ipv6: 2001::1:0:24:13/127
+      et-0/0/20:5:
+        ipv4: 1.0.24.15/31
+        ipv6: 2001::1:0:24:15/127
+      et-0/0/20:6:
+        ipv4: 1.0.24.17/31
+        ipv6: 2001::1:0:24:17/127
+      et-0/0/20:7:
+        ipv4: 1.0.24.19/31
+        ipv6: 2001::1:0:24:19/127
+      et-0/0/31:
+        ipv4: 2.4.111.254/24
+        ipv6: 2002::2:4:111:254/112
+  leaf5:
+    hostname: san-q5220-01
+    mgmt_ip: 10.83.6.32
+    role: leaf
+    platform: qfx5220
+    asn: 4200000015
+    router_id: 1.0.1.5
+    interfaces:
+      et-0/0/25:
+        ipv4: 1.0.25.1/31
+        ipv6: 2001::1:0:25:1/127
+        peer_device: spine2
+        peer_interface: et-0/0/58:0
+      et-0/0/10:0:
+        ipv4: 1.0.25.3/31
+        ipv6: 2001::1:0:25:3/127
+        peer_device: spine2
+        peer_interface: et-0/0/20:4
+      et-0/0/10:1:
+        ipv4: 1.0.25.5/31
+        ipv6: 2001::1:0:25:5/127
+        peer_device: spine2
+        peer_interface: et-0/0/20:5
+      et-0/0/10:2:
+        ipv4: 1.0.25.7/31
+        ipv6: 2001::1:0:25:7/127
+        peer_device: spine2
+        peer_interface: et-0/0/20:6
+      et-0/0/10:3:
+        ipv4: 1.0.25.9/31
+        ipv6: 2001::1:0:25:9/127
+        peer_device: spine2
+        peer_interface: et-0/0/20:7
+      et-0/0/31:
+        ipv4: 1.0.15.1/31
+        ipv6: 2001::1:0:15:1/127
+      et-0/0/30:0:
+        ipv4: 1.0.15.3/31
+        ipv6: 2001::1:0:15:3/127
+      et-0/0/30:1:
+        ipv4: 1.0.15.5/31
+        ipv6: 2001::1:0:15:5/127
+        peer_device: spine1
+        peer_interface: et-0/0/30:5
+      et-0/0/30:2:
+        ipv4: 1.0.15.7/31
+        ipv6: 2001::1:0:15:7/127
+        peer_device: spine1
+        peer_interface: et-0/0/30:6
+      et-0/0/30:3:
+        ipv4: 1.0.15.9/31
+        ipv6: 2001::1:0:15:9/127
+        peer_device: spine1
+        peer_interface: et-0/0/30:7
+      et-0/0/1:
+        ipv4: 2.5.111.254/24
+        ipv6: 2002::2:5:111:254/112
+  leaf6:
+    hostname: san-q5130-01
+    mgmt_ip: 10.83.6.21
+    role: leaf
+    platform: qfx5130
+    asn: 4200000016
+    router_id: 1.0.1.6
+    interfaces:
+      et-0/0/16:
+        ipv4: 1.0.16.1/31
+        ipv6: 2001::1:0:16:1/127
+      et-0/0/10:0:
+        ipv4: 1.0.16.3/31
+        ipv6: 2001::1:0:16:3/127
+      et-0/0/10:1:
+        ipv4: 1.0.16.5/31
+        ipv6: 2001::1:0:16:5/127
+      et-0/0/10:2:
+        ipv4: 1.0.16.7/31
+        ipv6: 2001::1:0:16:7/127
+      et-0/0/10:3:
+        ipv4: 1.0.16.9/31
+        ipv6: 2001::1:0:16:9/127
+      et-0/0/26:
+        ipv4: 1.0.26.1/31
+        ipv6: 2001::1:0:26:1/127
+        peer_device: spine2
+        peer_interface: et-0/0/62
+      et-0/0/30:0:
+        ipv4: 1.0.26.3/31
+        ipv6: 2001::1:0:26:3/127
+        peer_device: spine2
+        peer_interface: et-0/0/30:0
+      et-0/0/30:1:
+        ipv4: 1.0.26.5/31
+        ipv6: 2001::1:0:26:5/127
+        peer_device: spine2
+        peer_interface: et-0/0/30:1
+      et-0/0/30:2:
+        ipv4: 1.0.26.7/31
+        ipv6: 2001::1:0:26:7/127
+        peer_device: spine2
+        peer_interface: et-0/0/30:2
+      et-0/0/30:3:
+        ipv4: 1.0.26.9/31
+        ipv6: 2001::1:0:26:9/127
+        peer_device: spine2
+        peer_interface: et-0/0/30:3
+      et-0/0/6:0:
+        ipv4: 1.0.26.11/31
+        ipv6: 2001::1:0:26:11/127
+        peer_device: spine2
+        peer_interface: et-0/0/8:0
+      et-0/0/6:1:
+        ipv4: 1.0.26.13/31
+        ipv6: 2001::1:0:26:13/127
+        peer_device: spine2
+        peer_interface: et-0/0/8:1
+      et-0/0/6:2:
+        ipv4: 1.0.26.15/31
+        ipv6: 2001::1:0:26:15/127
+        peer_device: spine2
+        peer_interface: et-0/0/8:2
+      et-0/0/6:3:
+        ipv4: 1.0.26.17/31
+        ipv6: 2001::1:0:26:17/127
+        peer_device: spine2
+        peer_interface: et-0/0/8:3
+      et-0/0/8:
+        ipv4: 1.0.26.19/31
+        ipv6: 2001::1:0:26:19/127
+        peer_device: spine2
+        peer_interface: et-0/0/10
+      et-0/0/1:
+        ipv4: 2.6.111.254/24
+        ipv6: 2002::2:6:111:254/112
+  leaf7:
+    hostname: san-q5700-03
+    mgmt_ip: 10.83.6.9
+    role: leaf
+    platform: qfx5700
+    asn: 4200000017
+    router_id: 1.0.1.7
+    interfaces:
+      et-6/0/0:
+        ipv4: 1.0.17.1/31
+        ipv6: 2001::1:0:17:1/127
+      et-7/0/12:
+        ipv4: 1.0.17.3/31
+        ipv6: 2001::1:0:17:3/127
+      et-7/0/13:
+        ipv4: 1.0.17.5/31
+        ipv6: 2001::1:0:17:5/127
+      et-7/0/14:
+        ipv4: 1.0.17.7/31
+        ipv6: 2001::1:0:17:7/127
+      et-7/0/15:
+        ipv4: 1.0.17.9/31
+        ipv6: 2001::1:0:17:9/127
+      et-6/0/1:
+        ipv4: 1.0.27.1/31
+        ipv6: 2001::1:0:27:1/127
+        peer_device: spine2
+        peer_interface: et-0/0/58:1
+      et-7/0/8:
+        ipv4: 1.0.27.3/31
+        ipv6: 2001::1:0:27:3/127
+        peer_device: spine2
+        peer_interface: et-0/0/0:0
+      et-7/0/9:
+        ipv4: 1.0.27.5/31
+        ipv6: 2001::1:0:27:5/127
+        peer_device: spine2
+        peer_interface: et-0/0/0:1
+      et-7/0/10:
+        ipv4: 1.0.27.7/31
+        ipv6: 2001::1:0:27:7/127
+        peer_device: spine2
+        peer_interface: et-0/0/0:2
+      et-7/0/11:
+        ipv4: 1.0.27.9/31
+        ipv6: 2001::1:0:27:9/127
+        peer_device: spine2
+        peer_interface: et-0/0/0:3
+      et-6/0/3:
+        ipv4: 2.7.111.254/24
+        ipv6: 2002::2:7:111:254/112

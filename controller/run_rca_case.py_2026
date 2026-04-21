@@ -1,0 +1,2616 @@
+import argparse
+import json
+import os
+import re
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from controller.ixia_client import IxiaClient, load_json_file
+from controller.progress_logger import ProgressLogger
+from typing import Any, Dict, List, Tuple
+
+DEFAULT_PROFILE = "hotspot_congestion_qmon"
+DEFAULT_TOPOLOGY = "artifacts/topology/topology_full.json"
+DEFAULT_IXIA_INVENTORY = os.path.join("controller", "ixia_inventory.json")
+
+def _resolve_telemetry_interface_alias_from_reports(
+    *,
+    reports: List[Dict[str, Any]],
+    node: str,
+    queue: int,
+    preferred_tail_value: int,
+) -> str | None:
+    """
+    Resolve interface alias using multiple recovery reports.
+    Choose the interface whose tail-drop values are closest to the preferred UI value
+    and which appears consistently across reports.
+    """
+    by_interface: Dict[str, Dict[str, Any]] = {}
+
+    for report in reports:
+        candidates = _extract_all_queue_candidates(
+            snapshot_report=report,
+            node=node,
+            queue=queue,
+        )
+        for c in candidates:
+            intf = str(c.get("interface"))
+            entry = by_interface.setdefault(
+                intf,
+                {
+                    "interface": intf,
+                    "hits": 0,
+                    "tail_values": [],
+                    "max_tail": 0,
+                    "max_occ": 0,
+                },
+            )
+            tail_val = _safe_int(c.get("tail_dropped_packets"))
+            occ_val = _safe_int(c.get("peak_buffer_occupancy_percent"))
+            entry["hits"] += 1
+            entry["tail_values"].append(tail_val)
+            entry["max_tail"] = max(entry["max_tail"], tail_val)
+            entry["max_occ"] = max(entry["max_occ"], occ_val)
+
+    if not by_interface:
+        return None
+
+    ranked = sorted(
+        by_interface.values(),
+        key=lambda x: (
+            -x["hits"],
+            abs(x["max_tail"] - preferred_tail_value) if preferred_tail_value > 0 else 0,
+            -x["max_tail"],
+            -x["max_occ"],
+            x["interface"],
+        ),
+    )
+    return str(ranked[0]["interface"])
+
+def evaluate_pre_event_cleanliness(pre_report: dict) -> dict:
+    summary = pre_report.get("summary", {}) or {}
+    hotspots = pre_report.get("hotspots", []) or []
+
+    severe_hotspots = [
+        h for h in hotspots
+        if str(h.get("severity", "")).lower() in {"high", "critical"}
+    ]
+
+    total_tail_drop = 0
+    max_occupancy = 0.0
+
+    for h in hotspots:
+        total_tail_drop += int(h.get("tail-drop-pkts", 0) or h.get("tail_dropped_packets", 0) or 0)
+        occ = float(h.get("peak-buffer-occupancy-percent", 0) or h.get("peak_buffer_occupancy_percent", 0) or 0)
+        max_occupancy = max(max_occupancy, occ)
+
+    contaminated = bool(severe_hotspots) or total_tail_drop > 0
+
+    reasons = []
+    if severe_hotspots:
+        reasons.append(f"severe_hotspots={len(severe_hotspots)}")
+    if total_tail_drop > 0:
+        reasons.append(f"tail_drop_present={total_tail_drop}")
+    if max_occupancy >= 70:
+        reasons.append(f"high_baseline_occupancy={max_occupancy}")
+
+    return {
+        "pass": not contaminated,
+        "baseline_contaminated": contaminated,
+        "severe_hotspot_count": len(severe_hotspots),
+        "total_tail_drop": total_tail_drop,
+        "max_occupancy": max_occupancy,
+        "reasons": reasons,
+    }
+
+
+
+
+
+def snapshot_health(report: dict) -> str:
+    ok_nodes = int(report.get("ok_nodes", 0) or 0)
+    failed_nodes = int(report.get("failed_nodes", 0) or 0)
+
+    if ok_nodes > 0 and failed_nodes == 0:
+        return "ok"
+    if ok_nodes > 0 and failed_nodes > 0:
+        return "partial"
+    return "failed"
+
+def load_snapshot_health(path: str) -> dict:
+    data = load_json(path)
+    return {
+        "path": path,
+        "total_nodes": data.get("total_nodes", 0),
+        "ok_nodes": data.get("ok_nodes", 0),
+        "failed_nodes": data.get("failed_nodes", 0),
+        "nodes": data.get("nodes", []),
+    }
+
+
+def derive_snapshot_status(snapshot_health: dict) -> str:
+    ok_nodes = snapshot_health.get("ok_nodes", 0)
+    failed_nodes = snapshot_health.get("failed_nodes", 0)
+
+    if ok_nodes == 0:
+        return "failed"
+    if failed_nodes > 0:
+        return "partial"
+    return "ok"
+
+
+def progress_log_path(run_id: str) -> str:
+    return os.path.join("artifacts", "campaigns", run_id, "run_progress.log")
+
+
+def load_json(path: str):
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def ensure_file(path: str) -> None:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"expected file not found: {path}")
+
+
+def telemetry_json_path(run_id: str, snapshot_name: str, profile: str) -> str:
+    return os.path.join(
+        "artifacts", "campaigns", run_id, "telemetry", f"{snapshot_name}_{profile}.json"
+    )
+
+
+def congestion_json_path(run_id: str, snapshot_name: str, profile: str) -> str:
+    return os.path.join(
+        "artifacts",
+        "campaigns",
+        run_id,
+        "telemetry",
+        f"{snapshot_name}_{profile}_congestion_analysis.json",
+    )
+
+
+def fabric_hotspot_json_path(run_id: str, snapshot_name: str, profile: str) -> str:
+    return os.path.join(
+        "artifacts",
+        "campaigns",
+        run_id,
+        "telemetry",
+        f"{snapshot_name}_{profile}_congestion_analysis_fabric_hotspots.json",
+    )
+
+
+def delta_json_path(run_id: str, snapshot_name: str, profile: str) -> str:
+    return os.path.join(
+        "artifacts",
+        "campaigns",
+        run_id,
+        "telemetry",
+        f"{snapshot_name}_{profile}_delta_analysis.json",
+    )
+
+
+def telemetry_diff_json_path(run_id: str, profile: str) -> str:
+    return os.path.join(
+        "artifacts", "campaigns", run_id, "telemetry", f"diff_{profile}.json"
+    )
+
+
+def telemetry_anomaly_json_path(run_id: str, profile: str) -> str:
+    return os.path.join(
+        "artifacts", "campaigns", run_id, "telemetry", f"anomaly_{profile}.json"
+    )
+
+
+def traffic_dir(run_id: str) -> str:
+    return os.path.join("artifacts", "campaigns", run_id, "traffic")
+
+
+def traffic_json_path(run_id: str, name: str) -> str:
+    return os.path.join(traffic_dir(run_id), f"{name}.json")
+
+
+def write_final_report(
+    *,
+    run_id: str,
+    intent_name: str,
+    src: str,
+    dst: str,
+    profile: str,
+    nodes: str,
+    topology_path: str,
+) -> str:
+    running_congestion_path = congestion_json_path(run_id, "running", profile)
+    running_fabric_path = fabric_hotspot_json_path(run_id, "running", profile)
+    running_delta_path = delta_json_path(run_id, "running", profile)
+
+    congestion = load_json(running_congestion_path)
+    fabric = load_json(running_fabric_path)
+    delta = load_json(running_delta_path)
+    topology = load_json(topology_path)
+
+    from controller.traffic_intent_rca_ecmp import (
+        load_hotspots,
+        build_corridor,
+        correlate_hotspots,
+        classify_cause,
+    )
+
+    intent_rca_error = None
+    try:
+        hotspots = load_hotspots(running_fabric_path)
+        corridor, src_leaf, dst_leaf = build_corridor(topology, src, dst)
+        matched = correlate_hotspots(corridor, hotspots)
+        top = matched[0] if matched else None
+    except Exception as exc:
+        intent_rca_error = str(exc)
+        hotspots = []
+        corridor = []
+        src_leaf = None
+        dst_leaf = None
+        matched = []
+        top = None
+
+    intent_rca = {
+        "src_leaf": src_leaf,
+        "dst_leaf": dst_leaf,
+        "corridor": [{"node": n, "interface": i} for n, i in corridor],
+        "matched_hotspots": matched[:20],
+        "top_path_hotspot": top,
+        "rca_summary": None,
+        "status": "failed" if intent_rca_error else "ok",
+        "error": intent_rca_error,
+    }
+
+    if top:
+        intent_rca["rca_summary"] = {
+            "node": top.get("node"),
+            "interface": top.get("interface"),
+            "queue": top.get("queue"),
+            "severity": top.get("severity"),
+            "score": top.get("score"),
+            "probable_cause": top.get("probable_cause"),
+            "intent_cause": classify_cause(top),
+            "signals": top.get("signals", {}),
+        }
+
+    report = {
+        "generated_at": utc_now_iso(),
+        "run_id": run_id,
+        "intent_name": intent_name,
+        "src": src,
+        "dst": dst,
+        "profile": profile,
+        "nodes": [n.strip() for n in nodes.split(",") if n.strip()],
+        "status": {
+            "pre_snapshot": "ok",
+            "running_snapshot": "ok",
+            "post_snapshot": "ok",
+            "congestion_analysis": "ok",
+            "fabric_ranking": "ok",
+            "delta_analysis": "ok",
+            "intent_rca": "ok",
+        },
+        "files": {
+            "pre_telemetry": telemetry_json_path(run_id, "pre", profile),
+            "running_telemetry": telemetry_json_path(run_id, "running", profile),
+            "post_telemetry": telemetry_json_path(run_id, "post", profile),
+            "running_congestion": running_congestion_path,
+            "running_fabric_hotspots": running_fabric_path,
+            "running_delta": running_delta_path,
+        },
+        "congestion_summary": {
+            "total_hotspots": congestion.get("total_hotspots", 0),
+            "top_hotspot": (congestion.get("hotspots") or [None])[0],
+        },
+        "fabric_summary": {
+            "severity_counts": fabric.get("severity_counts", {}),
+            "top_queues": fabric.get("top_queues", [])[:10],
+            "top_interfaces": fabric.get("top_interfaces", [])[:10],
+            "top_nodes": fabric.get("top_nodes", [])[:10],
+        },
+        "delta_summary": {
+            "top_deltas": delta[:10] if isinstance(delta, list) else delta,
+        },
+        "intent_rca": intent_rca,
+    }
+
+    out_path = os.path.join("artifacts", "campaigns", run_id, "rca_final_report.json")
+    with open(out_path, "w") as f:
+        json.dump(report, f, indent=2, sort_keys=False)
+
+    return out_path
+
+
+def write_summary(
+    *,
+    run_id: str,
+    intent_name: str,
+    src: str,
+    dst: str,
+    profile: str,
+    nodes: str,
+    out_path: str,
+    stress_orchestrator_report: str | None = None,
+    status: dict | None = None,
+    files_override: dict | None = None,
+    intent_rca_status: str = "ok",
+    baseline_window: int | None = None,
+    running_decay: int | None = None,
+    settle_gap: int | None = None,
+    post_window: int | None = None,
+) -> None:
+    files = {
+        # NEW explicit phase-aware naming
+        "baseline_telemetry": telemetry_json_path(run_id, "pre", profile),
+        "running_telemetry": telemetry_json_path(run_id, "running", profile),
+        "post_telemetry": telemetry_json_path(run_id, "post", profile),
+
+        # LEGACY compatibility
+        "pre_telemetry": telemetry_json_path(run_id, "pre", profile),
+
+        # Existing derived artifacts
+        "running_congestion": congestion_json_path(run_id, "running", profile),
+        "running_fabric_hotspots": fabric_hotspot_json_path(run_id, "running", profile),
+        "running_delta": delta_json_path(run_id, "running", profile),
+    }
+
+    if stress_orchestrator_report:
+        files["stress_orchestrator_report"] = stress_orchestrator_report
+
+    if files_override:
+        files.update(files_override)
+
+    data = {
+        "generated_at": utc_now_iso(),
+        "run_id": run_id,
+        "intent_name": intent_name,
+        "src": src,
+        "dst": dst,
+        "profile": profile,
+        "nodes": nodes,
+        "files": files,
+        "status": status or {"intent_rca": intent_rca_status},
+        "phase_timeline": {
+            "baseline_window": baseline_window,
+            "running_decay": running_decay,
+            "settle_gap": settle_gap,
+            "post_window": post_window,
+            "phase_windows": (files_override or {}).get("phase_windows"),
+        },
+        "pre_event_cleanliness": (files_override or {}).get("pre_event_cleanliness"),
+    }
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=False)
+
+
+def collect_snapshot(
+    *,
+    run_id: str,
+    snapshot_name: str,
+    profile: str,
+    nodes: str,
+    timeout: int,
+    topology_path: str,
+) -> None:
+    from controller.telemetry_monitor import (
+        load_catalog,
+        get_profile_paths,
+        load_inventory,
+        parse_nodes,
+        collect_snapshot as telemetry_collect_snapshot,
+        build_output_paths,
+        write_json,
+        write_text,
+        render_text_report,
+    )
+
+    from controller.telemetry_monitor import DEFAULT_CATALOG, DEFAULT_INVENTORY, DEFAULT_TELEMETRY_SERVER
+
+    catalog = load_catalog(DEFAULT_CATALOG)
+    paths = get_profile_paths(catalog, profile)
+    inventory = load_inventory(DEFAULT_INVENTORY)
+    node_list = parse_nodes(nodes)
+
+    report = telemetry_collect_snapshot(
+        telemetry_server=DEFAULT_TELEMETRY_SERVER,
+        ssh_user="root",
+        nodes=node_list,
+        paths=paths,
+        inventory=inventory,
+        timeout=timeout,
+        snapshot_name=snapshot_name,
+        profile=profile,
+        source_type="campaign",
+        run_id=run_id,
+        default_gnmi_port=60061,
+        topology_path=topology_path,
+    )
+    json_path, txt_path = build_output_paths(
+        run_id=run_id,
+        snapshot_name=snapshot_name,
+        profile=profile,
+    )
+
+    write_json(json_path, report)
+    write_text(txt_path, render_text_report(report))
+
+    print(f"Telemetry JSON report : {json_path}")
+    print(f"Telemetry text report : {txt_path}")
+
+
+def run_congestion_analysis(run_id: str, profile: str) -> None:
+    from controller.congestion_analyzer import (
+        load_report,
+        analyze_congestion,
+        build_output_paths,
+        write_json,
+        write_text,
+        render_text_summary,
+    )
+
+    input_path = telemetry_json_path(run_id, "running", profile)
+    report = load_report(input_path)
+    result = analyze_congestion(report)
+    json_out, txt_out = build_output_paths(input_path)
+    write_json(json_out, result)
+    write_text(txt_out, render_text_summary(result))
+    print(f"Congestion JSON report : {json_out}")
+    print(f"Congestion text report : {txt_out}")
+
+
+def run_fabric_ranker(run_id: str, profile: str, top_n: int) -> None:
+    from controller.fabric_hotspot_ranker import (
+        load_json,
+        rank_fabric_hotspots,
+        build_output_paths,
+        write_json,
+        write_text,
+        render_text,
+    )
+
+    input_path = congestion_json_path(run_id, "running", profile)
+    analysis = load_json(input_path)
+    result = rank_fabric_hotspots(analysis, top_n=top_n)
+    json_out, txt_out = build_output_paths(input_path)
+    write_json(json_out, result)
+    write_text(txt_out, render_text(result))
+    print(f"Fabric hotspot JSON report : {json_out}")
+    print(f"Fabric hotspot text report : {txt_out}")
+
+
+def run_delta_analysis(run_id: str, profile: str, top_n: int) -> None:
+    from controller.congestion_delta_analyzer import (
+        load_snapshot,
+        build_metric_map,
+        compute_delta,
+        rank_hotspots,
+        write_report,
+    )
+
+    pre = load_snapshot(telemetry_json_path(run_id, "pre", profile))
+    running = load_snapshot(telemetry_json_path(run_id, "running", profile))
+    post = load_snapshot(telemetry_json_path(run_id, "post", profile))
+
+    pre_map = build_metric_map(pre)
+    run_map = build_metric_map(running)
+    post_map = build_metric_map(post)
+
+    delta_records = compute_delta(pre_map, run_map, post_map)
+    ranked = rank_hotspots(delta_records)
+
+    out_path = delta_json_path(run_id, "running", profile)
+    write_report(out_path, ranked, top_n)
+
+
+def run_intent_rca(run_id: str, profile: str, topology: str, src: str, dst: str, intent_name: str) -> None:
+    from controller.traffic_intent_rca_ecmp import (
+        load_json,
+        load_hotspots,
+        build_corridor,
+        correlate_hotspots,
+        render,
+    )
+
+    topology_data = load_json(topology)
+    hotspots = load_hotspots(fabric_hotspot_json_path(run_id, "running", profile))
+    corridor, src_leaf, dst_leaf = build_corridor(topology_data, src, dst)
+    matched = correlate_hotspots(corridor, hotspots)
+    render(intent_name, src_leaf, dst_leaf, corridor, matched)
+
+
+def run_telemetry_diff_and_analyzer(run_id: str, profile: str) -> dict:
+    outputs = {}
+    try:
+        from controller.telemetry_diff import compare_snapshots, write_json as diff_write_json, write_text as diff_write_text, render_text_report as diff_render_text_report
+        pre_snapshot = load_json(telemetry_json_path(run_id, "pre", profile))
+        post_snapshot = load_json(telemetry_json_path(run_id, "post", profile))
+        diff_report = compare_snapshots(pre_snapshot, post_snapshot)
+        diff_report["pre_snapshot"] = telemetry_json_path(run_id, "pre", profile)
+        diff_report["post_snapshot"] = telemetry_json_path(run_id, "post", profile)
+        diff_json = telemetry_diff_json_path(run_id, profile)
+        diff_txt = diff_json.replace(".json", ".txt")
+        diff_write_json(diff_json, diff_report)
+        diff_write_text(diff_txt, diff_render_text_report(diff_report))
+        outputs["telemetry_diff"] = diff_json
+        print(f"Telemetry diff JSON report : {diff_json}")
+    except Exception as exc:
+        outputs["telemetry_diff_error"] = str(exc)
+
+    try:
+        from controller.telemetry_analyzer import (
+            detect_anomalies,
+            summarize_anomalies,
+            build_entity_rollup,
+            write_json as ta_write_json,
+            write_text as ta_write_text,
+            render_text_report as ta_render_text_report,
+        )
+        pre_snapshot = load_json(telemetry_json_path(run_id, "pre", profile))
+        post_snapshot = load_json(telemetry_json_path(run_id, "post", profile))
+        anomalies = detect_anomalies(
+            pre_snapshot=pre_snapshot,
+            post_snapshot=post_snapshot,
+            spike_ratio=5.0,
+            gauge_delta_threshold=3.0,
+        )
+        summary = summarize_anomalies(anomalies)
+        analyzer_report = {
+            "pre_snapshot": telemetry_json_path(run_id, "pre", profile),
+            "post_snapshot": telemetry_json_path(run_id, "post", profile),
+            "summary": summary,
+            "entity_rollup": build_entity_rollup(anomalies),
+            "anomalies": anomalies,
+        }
+        anomaly_json = telemetry_anomaly_json_path(run_id, profile)
+        anomaly_txt = anomaly_json.replace(".json", ".txt")
+        ta_write_json(anomaly_json, analyzer_report)
+        ta_write_text(anomaly_txt, ta_render_text_report(summary, anomalies))
+        outputs["telemetry_analyzer"] = anomaly_json
+        print(f"Telemetry anomaly JSON report : {anomaly_json}")
+    except Exception as exc:
+        outputs["telemetry_analyzer_error"] = str(exc)
+
+    return outputs
+
+
+def run_roce_and_traffic_evidence(
+    *,
+    run_id: str,
+    timeout: int,
+    ixia_inventory: str,
+    session_id: int | None,
+    enable_live_monitor: bool,
+    live_monitor_iterations: int,
+    live_monitor_interval: int,
+    enable_port_stats: bool,
+) -> dict:
+    outputs = {}
+
+    def safe_step(name, func):
+        try:
+            path = func()
+            outputs[name] = path
+        except Exception as exc:
+            outputs[f"{name}_error"] = str(exc)
+
+    safe_step(
+        "rocev2_pre",
+        lambda: _run_roce_stats(run_id=run_id, snapshot_name="rocev2_pre", timeout=timeout, ixia_inventory=ixia_inventory, session_id=session_id),
+    )
+    safe_step(
+        "rocev2_post",
+        lambda: _run_roce_stats(run_id=run_id, snapshot_name="rocev2_post", timeout=timeout, ixia_inventory=ixia_inventory, session_id=session_id),
+    )
+
+    pre_roce = outputs.get("rocev2_pre")
+    post_roce = outputs.get("rocev2_post")
+    if pre_roce and post_roce:
+        safe_step(
+            "rocev2_verdict",
+            lambda: _run_roce_verifier(run_id=run_id, pre_path=pre_roce, post_path=post_roce),
+        )
+        verdict = outputs.get("rocev2_verdict")
+        if verdict:
+            safe_step(
+                "rocev2_deep_inspection",
+                lambda: _run_roce_deep(run_id=run_id, pre_path=pre_roce, post_path=post_roce, verdict_path=verdict),
+            )
+            deep = outputs.get("rocev2_deep_inspection")
+            if deep:
+                safe_step(
+                    "rocev2_hotspot_report",
+                    lambda: _run_roce_hotspot(run_id=run_id, deep_path=deep),
+                )
+
+    if enable_live_monitor:
+        safe_step(
+            "ixia_live_monitor",
+            lambda: _run_ixia_live_monitor(
+                run_id=run_id,
+                timeout=timeout,
+                ixia_inventory=ixia_inventory,
+                session_id=session_id,
+                iterations=live_monitor_iterations,
+                poll_interval=live_monitor_interval,
+            ),
+        )
+
+    if enable_port_stats:
+        safe_step(
+            "ixia_port_pre",
+            lambda: _run_ixia_port_stats(run_id=run_id, snapshot_name="ixia_port_pre", timeout=timeout, ixia_inventory=ixia_inventory, session_id=session_id),
+        )
+        safe_step(
+            "ixia_port_post",
+            lambda: _run_ixia_port_stats(run_id=run_id, snapshot_name="ixia_port_post", timeout=timeout, ixia_inventory=ixia_inventory, session_id=session_id),
+        )
+        pre_port = outputs.get("ixia_port_pre")
+        post_port = outputs.get("ixia_port_post")
+        if pre_port and post_port:
+            safe_step(
+                "traffic_verifier",
+                lambda: _run_traffic_verifier(run_id=run_id, pre_path=pre_port, post_path=post_port),
+            )
+
+    deep_path = outputs.get("rocev2_deep_inspection")
+    verdict_path = outputs.get("rocev2_verdict")
+    hotspot_path = outputs.get("rocev2_hotspot_report")
+    if verdict_path and deep_path and hotspot_path:
+        safe_step(
+            "congestion_inspection",
+            lambda: _run_congestion_inspector(
+                run_id=run_id,
+                verdict_path=verdict_path,
+                deep_path=deep_path,
+                hotspot_path=hotspot_path,
+                pre_port_stats=outputs.get("ixia_port_pre"),
+                post_port_stats=outputs.get("ixia_port_post"),
+            ),
+        )
+        congestion_path = outputs.get("congestion_inspection")
+        if congestion_path:
+            safe_step(
+                "root_cause_correlation",
+                lambda: _run_root_cause_correlator(
+                    run_id=run_id,
+                    congestion_path=congestion_path,
+                    ixia_inventory=ixia_inventory,
+                ),
+            )
+
+    root_cause = outputs.get("root_cause_correlation")
+    telemetry_anomaly = telemetry_anomaly_json_path(run_id, DEFAULT_PROFILE)
+    if root_cause and os.path.exists(telemetry_json_path(run_id, "post", DEFAULT_PROFILE)):
+        pass
+
+    return outputs
+
+
+def _run_roce_stats(*, run_id: str, snapshot_name: str, timeout: int, ixia_inventory: str, session_id: int | None) -> str:
+    from controller.ixia_rocev2_stats import output_paths
+    from controller.ixia_client import IxiaClient
+
+    inv = load_json_file(ixia_inventory)
+    api_server = inv.get("ixnetwork_api_server")
+    if not api_server:
+        raise RuntimeError("ixnetwork_api_server not found in ixia inventory")
+
+    client = IxiaClient(api_server=api_server, inventory_path=ixia_inventory, timeout=timeout, verify_tls=False)
+    sid = client.resolve_session_id(session_id)
+    data = client.get_statistics_view_rows("RoCEv2 Flow Statistics", sid)
+    from controller.ixia_rocev2_stats import normalize_page_rows, summarize_rows
+    page = data.get("page", {})
+    normalized_rows = normalize_page_rows(page)
+    report = {
+        "collected_at": utc_now_iso(),
+        "api_server": api_server,
+        "session_id": sid,
+        "view_name": "RoCEv2 Flow Statistics",
+        "view_found": True,
+        "available_views": [],
+        "summary": summarize_rows(normalized_rows),
+        "normalized_rows": normalized_rows,
+        "column_captions": page.get("columnCaptions", []),
+        "raw_page": page,
+    }
+    out = output_paths("campaign", run_id, snapshot_name)
+    with open(out["json"], "w") as f:
+        json.dump(report, f, indent=2)
+    with open(out["txt"], "w") as f:
+        from controller.ixia_rocev2_stats import render_text_report
+        f.write(render_text_report(report))
+    return out["json"]
+
+
+def _run_roce_verifier(*, run_id: str, pre_path: str, post_path: str) -> str:
+    from controller.rocev2_verifier import (
+        load_json as r_load_json,
+        evaluate_single_snapshot,
+        evaluate_pre_post,
+        summarize_findings,
+        build_rx_port_rollup,
+        overall_verdict,
+        write_json,
+        write_text,
+        render_text_report,
+        default_output_paths,
+    )
+    pre_snapshot = r_load_json(pre_path)
+    post_snapshot = r_load_json(post_path)
+    findings = []
+    findings.extend(evaluate_single_snapshot(
+        snapshot=post_snapshot,
+        delta_warn_threshold=100000,
+        delta_critical_threshold=10000000,
+        retx_warn_threshold=1,
+        retx_critical_threshold=1000000,
+        seqerr_warn_threshold=1,
+        seqerr_critical_threshold=1000000,
+        latency_warn_ns=10000,
+        latency_critical_ns=100000,
+    ))
+    findings.extend(evaluate_pre_post(
+        pre_snapshot=pre_snapshot,
+        post_snapshot=post_snapshot,
+        delta_increase_warn=100000,
+        retx_increase_warn=1000,
+        seqerror_increase_warn=1000,
+        latency_increase_warn_ns=5000,
+    ))
+    summary = summarize_findings(findings)
+    rx_rollup = build_rx_port_rollup(findings)
+    verdict = overall_verdict(summary)
+    report = {
+        "source_type": "campaign",
+        "run_id": run_id,
+        "pre_snapshot": pre_path,
+        "post_snapshot": post_path,
+        "verdict": verdict,
+        "summary": summary,
+        "rx_port_rollup": rx_rollup,
+        "findings": findings,
+    }
+    out_json, out_txt = default_output_paths("campaign", run_id)
+    write_json(out_json, report)
+    write_text(out_txt, render_text_report(report))
+    return out_json
+
+
+def _run_roce_deep(*, run_id: str, pre_path: str, post_path: str, verdict_path: str) -> str:
+    from controller.rocev2_deep_inspector import (
+        load_json as d_load_json,
+        build_flow_metrics,
+        build_rx_rollup,
+        build_hotspot_summary,
+        top_n,
+        write_json,
+        write_text,
+        render_text_report,
+        default_output_paths,
+    )
+    pre_snapshot = d_load_json(pre_path)
+    post_snapshot = d_load_json(post_path)
+    verdict = d_load_json(verdict_path)
+    flow_rows = build_flow_metrics(post_snapshot, pre_snapshot)
+    rx_rollup = build_rx_rollup(flow_rows)
+    report = {
+        "run_id": run_id,
+        "source_type": "campaign",
+        "pre_snapshot": pre_path,
+        "post_snapshot": post_path,
+        "verdict_path": verdict_path,
+        "total_flows": len(flow_rows),
+        "rx_rollup": rx_rollup,
+        "top_by_delta": top_n(flow_rows, "frames_delta", 15),
+        "top_by_retx": top_n(flow_rows, "frames_retx", 15),
+        "top_by_seqerror": top_n(flow_rows, "frames_seqerror", 15),
+        "top_by_latency": top_n(flow_rows, "max_latency_ns", 15),
+        "top_by_delta_increase": top_n(flow_rows, "delta_increase", 15),
+        "top_by_retx_increase": top_n(flow_rows, "retx_increase", 15),
+        "top_by_seqerror_increase": top_n(flow_rows, "seqerror_increase", 15),
+        "hotspot_summary": build_hotspot_summary(rx_rollup),
+        "verdict_summary": verdict.get("summary", {}),
+    }
+    out_json, out_txt = default_output_paths("campaign", run_id)
+    write_json(out_json, report)
+    write_text(out_txt, render_text_report(report))
+    return out_json
+
+
+def _run_roce_hotspot(*, run_id: str, deep_path: str) -> str:
+    from controller.rocev2_hotspot_report import load, build_hotspot_report, output_paths, render_text
+    deep = load(deep_path)
+    report = build_hotspot_report(deep)
+    json_path, txt_path = output_paths("campaign", run_id)
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+    with open(json_path, "w") as f:
+        json.dump(report, f, indent=2)
+    with open(txt_path, "w") as f:
+        f.write(render_text(report, run_id))
+    return json_path
+
+
+def _run_ixia_live_monitor(*, run_id: str, timeout: int, ixia_inventory: str, session_id: int | None, iterations: int, poll_interval: int) -> str:
+    from controller.ixia_live_monitor import (
+        output_paths,
+        utc_now_iso,
+        get_view_rows,
+        analyze_rocev2,
+        analyze_port_stats,
+        detect_alerts,
+        render_text,
+    )
+    from controller.ixia_client import IxiaClient
+    inventory = load_json_file(ixia_inventory)
+    api_server = inventory.get("ixnetwork_api_server")
+    if not api_server:
+        raise RuntimeError("ixnetwork_api_server not found in ixia inventory")
+    client = IxiaClient(api_server=api_server, inventory_path=ixia_inventory, timeout=timeout, verify_tls=False)
+    sid = client.resolve_session_id(session_id)
+    report = {
+        "run_id": run_id,
+        "source_type": "campaign",
+        "snapshot_name": "live",
+        "api_server": api_server,
+        "session_id": sid,
+        "poll_interval_sec": poll_interval,
+        "iterations": [],
+    }
+    for i in range(1, iterations + 1):
+        ts = utc_now_iso()
+        rocev2_rows = get_view_rows(client, sid, "RoCEv2 Flow Statistics")
+        port_rows = get_view_rows(client, sid, "Port Statistics")
+        rocev2_analysis = analyze_rocev2(rocev2_rows, 10)
+        port_analysis = analyze_port_stats(port_rows, 10)
+        alerts = detect_alerts(
+            rocev2_analysis=rocev2_analysis,
+            port_analysis=port_analysis,
+            delta_alert_threshold=10000000,
+            retx_alert_threshold=1000000,
+            seqerror_alert_threshold=1000000,
+            latency_alert_threshold_ns=100000,
+        )
+        report["iterations"].append({
+            "iteration": i,
+            "timestamp": ts,
+            "rocev2": rocev2_analysis,
+            "ports": port_analysis,
+            "alerts": alerts,
+        })
+        if i < iterations:
+            time.sleep(poll_interval)
+    out = output_paths("campaign", run_id, "live")
+    with open(out["json"], "w") as f:
+        json.dump(report, f, indent=2)
+    with open(out["txt"], "w") as f:
+        f.write(render_text(report))
+    return out["json"]
+
+
+def _run_ixia_port_stats(*, run_id: str, snapshot_name: str, timeout: int, ixia_inventory: str, session_id: int | None) -> str:
+    from controller.ixia_stats_collector import (
+        snapshot_paths,
+        normalize_port_stats,
+        build_summary,
+        render_text_report,
+    )
+    from controller.ixia_client import IxiaClient
+    inventory = load_json_file(ixia_inventory)
+    api_server = inventory.get("ixnetwork_api_server")
+    if not api_server:
+        raise RuntimeError("ixnetwork_api_server not found in ixia inventory")
+    client = IxiaClient(api_server=api_server, inventory_path=ixia_inventory, timeout=timeout, verify_tls=False)
+    sid = client.resolve_session_id(session_id)
+    port_stats = client.get_port_statistics(sid)
+    page = port_stats.get("page", {})
+    normalized_ports = normalize_port_stats(page, client.get_inventory_ports())
+    summary = build_summary(normalized_ports)
+    report = {
+        "collected_at": utc_now_iso(),
+        "api_server": api_server,
+        "session_id": sid,
+        "snapshot_name": snapshot_name,
+        "source_type": "campaign",
+        "summary": summary,
+        "column_captions": page.get("columnCaptions", []),
+        "normalized_ports": normalized_ports,
+        "raw_statistics_view": port_stats,
+    }
+    out = snapshot_paths("campaign", run_id, snapshot_name)
+    with open(out["json"], "w") as f:
+        json.dump(report, f, indent=2)
+    with open(out["txt"], "w") as f:
+        f.write(render_text_report(report))
+    return out["json"]
+
+
+def _run_traffic_verifier(*, run_id: str, pre_path: str, post_path: str) -> str:
+    from controller.traffic_verifier import (
+        load_json as t_load_json,
+        compare_single_snapshot,
+        compare_pre_post,
+        summarize_findings,
+        build_port_rollup,
+        overall_verdict,
+        write_json,
+        write_text,
+        render_text_report,
+        default_output_paths,
+    )
+    pre_snapshot = t_load_json(pre_path)
+    post_snapshot = t_load_json(post_path)
+    findings = []
+    findings.extend(compare_single_snapshot(
+        snapshot=post_snapshot,
+        zero_rx_min_tx_rate=1000,
+        low_rx_ratio_threshold=0.80,
+        idle_tx_rate_threshold=10,
+        pre_fec_ber_threshold=1e-12,
+        fec_frame_loss_threshold=0.0,
+    ))
+    findings.extend(compare_pre_post(
+        pre_snapshot=pre_snapshot,
+        post_snapshot=post_snapshot,
+        post_drop_ratio_threshold=0.50,
+        rate_drop_min_pre_rate=1000,
+    ))
+    summary = summarize_findings(findings)
+    rollup = build_port_rollup(findings)
+    verdict = overall_verdict(summary)
+    report = {
+        "source_type": "campaign",
+        "run_id": run_id,
+        "pre_snapshot": pre_path,
+        "post_snapshot": post_path,
+        "verdict": verdict,
+        "summary": summary,
+        "port_rollup": rollup,
+        "findings": findings,
+    }
+    out_json, out_txt = default_output_paths("campaign", run_id)
+    write_json(out_json, report)
+    write_text(out_txt, render_text_report(report))
+    return out_json
+
+
+def _run_congestion_inspector(*, run_id: str, verdict_path: str, deep_path: str, hotspot_path: str, pre_port_stats: str | None, post_port_stats: str | None) -> str:
+    from controller.congestion_inspector import (
+        load_json as c_load_json,
+        correlate,
+        build_conclusion,
+        write_json,
+        write_text,
+        render_text,
+        default_output_paths,
+    )
+    verdict = c_load_json(verdict_path)
+    deep = c_load_json(deep_path)
+    hotspot = c_load_json(hotspot_path)
+    pre_ps = c_load_json(pre_port_stats) if pre_port_stats else {}
+    post_ps = c_load_json(post_port_stats) if post_port_stats else {}
+    report = correlate(
+        verdict=verdict,
+        deep=deep,
+        hotspot=hotspot,
+        pre_port_stats_raw=pre_ps,
+        post_port_stats_raw=post_ps,
+    )
+    report["conclusion"] = build_conclusion(report)
+    outputs = default_output_paths("campaign", run_id)
+    write_json(outputs["json"], report)
+    write_text(outputs["txt"], render_text(report))
+    return outputs["json"]
+
+
+def _run_root_cause_correlator(*, run_id: str, congestion_path: str, ixia_inventory: str) -> str:
+    from controller.root_cause_correlator import (
+        load_json as r_load_json,
+        build_ixia_port_mapping,
+        map_hotspots_to_dut,
+        correlate_problem_flows,
+        build_evidence,
+        build_summary,
+        build_conclusion,
+        write_json,
+        write_text,
+        render_text,
+        default_output_paths,
+    )
+    congestion = r_load_json(congestion_path)
+    inventory = r_load_json(ixia_inventory)
+    port_map = build_ixia_port_mapping(inventory)
+    mapped_hotspots = map_hotspots_to_dut(congestion, port_map)
+    mapped_flows = correlate_problem_flows(congestion, port_map)
+    hotspots_with_evidence = []
+    for item in mapped_hotspots:
+        enriched = dict(item)
+        enriched["evidence"] = build_evidence(item)
+        hotspots_with_evidence.append(enriched)
+    summary = build_summary(mapped_hotspots, mapped_flows)
+    conclusion = build_conclusion(summary)
+    report = {
+        "summary": summary,
+        "hotspots_with_evidence": hotspots_with_evidence,
+        "port_mapping_used": port_map,
+        "conclusion": conclusion,
+    }
+    outputs = default_output_paths("campaign", run_id)
+    write_json(outputs["json"], report)
+    write_text(outputs["txt"], render_text(report))
+    return outputs["json"]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run end-to-end RCA case with embedded IXIA traffic control.")
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--src", required=True)
+    parser.add_argument("--dst", required=True)
+    parser.add_argument("--intent-name", required=True)
+    parser.add_argument("--nodes", required=True)
+    parser.add_argument("--profile", default=DEFAULT_PROFILE)
+    parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--topology", default=DEFAULT_TOPOLOGY)
+    parser.add_argument("--top-n", type=int, default=10)
+
+    parser.add_argument("--ixia-inventory", default=DEFAULT_IXIA_INVENTORY)
+    parser.add_argument("--ixia-session-id", type=int, default=None)
+    parser.add_argument("--running-wait", type=int, default=15)
+    parser.add_argument("--post-wait", type=int, default=300)
+    parser.add_argument("--resume-after-post", action="store_true")
+    parser.add_argument(
+        "--stress-orchestrator-report",
+        help="Optional path to stress_orchestrator_report.json for trigger/event correlation",
+    )
+
+    parser.add_argument("--enable-live-monitor", action="store_true")
+    parser.add_argument("--live-monitor-iterations", type=int, default=6)
+    parser.add_argument("--live-monitor-interval", type=int, default=5)
+    parser.add_argument("--enable-port-stats", action="store_true")
+
+    parser.add_argument("--baseline-window", type=int, default=300)
+    parser.add_argument("--running-decay", type=int, default=15)
+    parser.add_argument("--settle-gap", type=int, default=30)
+    parser.add_argument("--post-window", type=int, default=300)
+    parser.add_argument("--post-sample-count", type=int, default=10)
+    parser.add_argument("--post-sample-interval", type=int, default=30)
+
+    args = parser.parse_args()
+
+    args.baseline_window = max(1, int(args.baseline_window))
+    args.running_decay = max(0, int(args.running_decay))
+    args.settle_gap = max(0, int(args.settle_gap))
+    args.post_window = max(1, int(args.post_window))
+    args.post_wait = max(1, int(args.post_wait))
+    args.post_sample_count = max(1, int(args.post_sample_count))
+    args.post_sample_interval = max(1, int(args.post_sample_interval))
+
+    sampled_post_duration = args.post_sample_count * args.post_sample_interval
+    if sampled_post_duration > args.post_window:
+        args.post_window = sampled_post_duration
+
+    if args.post_wait < args.post_window:
+        args.post_wait = args.post_window
+
+    return args
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        if value is None:
+            return 0
+        if isinstance(value, bool):
+            return int(value)
+        return int(float(value))
+    except Exception:
+        return 0
+
+
+def _extract_hotspot_entities_from_ui(ui_report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    hotspots = ui_report.get("hotspots", []) or []
+    out: List[Dict[str, Any]] = []
+
+    for item in hotspots:
+        entity_id = str(item.get("entity_id") or "")
+        node = item.get("node")
+        interface = item.get("interface")
+        queue = item.get("queue")
+
+        if not entity_id or node is None or interface is None or queue is None:
+            continue
+
+        out.append(
+            {
+                "entity_id": entity_id,
+                "node": str(node),
+                "interface": str(interface),
+                "queue": _safe_int(queue),
+            }
+        )
+
+    return out
+
+
+def _load_json_if_exists(path: str) -> Dict[str, Any]:
+    if path and os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+import re
+
+
+def _iter_queue_records_for_node(
+    snapshot_report: Dict[str, Any],
+    *,
+    node: str,
+) -> List[Dict[str, Any]]:
+    """
+    Return all normalized records that belong to the requested node.
+
+    This is intentionally tolerant because snapshot JSON shapes vary:
+    - nodes[].normalized_records
+    - nodes[].subscriptions[].normalized_records
+    - nodes[].records
+    - top-level normalized_records / subscriptions
+    """
+    out: List[Dict[str, Any]] = []
+
+    def node_matches(candidate: Any) -> bool:
+        if candidate is None:
+            return False
+        c = str(candidate).strip()
+        n = str(node).strip()
+        return c == n or c.lower() == n.lower()
+
+    def collect_from_node_entry(node_entry: Dict[str, Any]) -> None:
+        out.extend(node_entry.get("normalized_records", []) or [])
+        out.extend(node_entry.get("records", []) or [])
+
+        for sub in node_entry.get("subscriptions", []) or []:
+            out.extend(sub.get("normalized_records", []) or [])
+            out.extend(sub.get("records", []) or [])
+
+    # 1) Normal path: iterate nodes[]
+    matched_any_node = False
+    for node_entry in snapshot_report.get("nodes", []) or []:
+        node_name = (
+            node_entry.get("node")
+            or node_entry.get("name")
+            or node_entry.get("hostname")
+            or node_entry.get("device")
+        )
+        if node_matches(node_name):
+            matched_any_node = True
+            collect_from_node_entry(node_entry)
+
+    if matched_any_node:
+        return out
+
+    # 2) Fallback: if node names are not normalized as expected, collect from all nodes
+    #    and let downstream filtering happen by interface/queue.
+    for node_entry in snapshot_report.get("nodes", []) or []:
+        if isinstance(node_entry, dict):
+            collect_from_node_entry(node_entry)
+
+    # 3) Extra fallback: top-level normalized records / subscriptions
+    out.extend(snapshot_report.get("normalized_records", []) or [])
+    out.extend(snapshot_report.get("records", []) or [])
+    for sub in snapshot_report.get("subscriptions", []) or []:
+        out.extend(sub.get("normalized_records", []) or [])
+        out.extend(sub.get("records", []) or [])
+
+    return out
+
+
+def _parse_interface_from_record_path(path: str) -> str | None:
+    if not path:
+        return None
+    m = re.search(r'interface\[name="?([^"\]]+)"?\]', path)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _parse_queue_from_record_path(path: str) -> int | None:
+    if not path:
+        return None
+
+    m = re.search(r'queue\[queue=(\d+)\]', path)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r'queue\[name="?(\d+)"?\]', path)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r'/queue/(\d+)(?:/|$)', path)
+    if m:
+        return int(m.group(1))
+
+    return None
+
+
+def _extract_all_queue_candidates(
+    snapshot_report: Dict[str, Any],
+    *,
+    node: str,
+    queue: int,
+) -> List[Dict[str, Any]]:
+    """
+    Return all candidate interface/queue records for a node+queue pair.
+    """
+    candidates: Dict[str, Dict[str, Any]] = {}
+
+    def pick_from_sources(rec: Dict[str, Any], rec_fields: Dict[str, Any], *names: str) -> int:
+        for name in names:
+            if name in rec_fields:
+                return _safe_int(rec_fields.get(name))
+            if rec.get(name) is not None:
+                return _safe_int(rec.get(name))
+        return 0
+
+    for rec in _iter_queue_records_for_node(snapshot_report, node=node):
+        rec_path = str(
+            rec.get("path")
+            or rec.get("xpath")
+            or rec.get("key")
+            or rec.get("prefix")
+            or rec.get("gnmi_prefix")
+            or ""
+        )
+        rec_fields = rec.get("fields") or rec.get("values") or {}
+
+        rec_queue = rec.get("queue")
+        if rec_queue is None:
+            rec_queue = _parse_queue_from_record_path(rec_path)
+
+        if _safe_int(rec_queue) != _safe_int(queue):
+            continue
+
+        rec_intf = (
+            rec.get("interface")
+            or rec.get("interface_name")
+            or rec.get("if_name")
+            or rec.get("ifname")
+            or rec.get("port")
+        )
+        if rec_intf is None:
+            rec_intf = _parse_interface_from_record_path(rec_path)
+
+        if not rec_intf:
+            continue
+
+        rec_intf = str(rec_intf)
+
+        entry = candidates.setdefault(
+            rec_intf,
+            {
+                "interface": rec_intf,
+                "tail_dropped_packets": 0,
+                "ecn_ce_packets": 0,
+                "red_dropped_packets": 0,
+                "resource_drops": 0,
+                "peak_buffer_occupancy_percent": 0,
+            },
+        )
+
+        entry["tail_dropped_packets"] = max(
+            entry["tail_dropped_packets"],
+            pick_from_sources(
+                rec,
+                rec_fields,
+                "tail-dropped-packets",
+                "tail-drop-pkts",
+                "tail_drop_pkts",
+                "tail_dropped_packets",
+                "tail-drop-packets",
+            ),
+        )
+        entry["ecn_ce_packets"] = max(
+            entry["ecn_ce_packets"],
+            pick_from_sources(
+                rec,
+                rec_fields,
+                "ecn-ce-packets",
+                "ecn-marked-pkts",
+                "ecn_marked_pkts",
+                "ecn_ce_packets",
+                "ecn-ce-marked-packets",
+            ),
+        )
+        entry["red_dropped_packets"] = max(
+            entry["red_dropped_packets"],
+            pick_from_sources(
+                rec,
+                rec_fields,
+                "red-dropped-packets",
+                "red-drop-pkts",
+                "red_drop_pkts",
+                "red_dropped_packets",
+            ),
+        )
+        entry["resource_drops"] = max(
+            entry["resource_drops"],
+            pick_from_sources(
+                rec,
+                rec_fields,
+                "in-resource-drops",
+                "resource_drops",
+                "in_resource_drops",
+                "resource-drop-pkts",
+            ),
+        )
+        entry["peak_buffer_occupancy_percent"] = max(
+            entry["peak_buffer_occupancy_percent"],
+            pick_from_sources(
+                rec,
+                rec_fields,
+                "peak-buffer-occupancy-percent",
+                "peak_buffer_occupancy_percent",
+                "buffer-occupancy-percent",
+                "buffer_occupancy_percent",
+            ),
+        )
+
+    return list(candidates.values())
+
+
+def _resolve_telemetry_interface_alias(
+    *,
+    snapshot_report: Dict[str, Any],
+    node: str,
+    queue: int,
+    preferred_tail_value: int,
+) -> str | None:
+    """
+    Resolve the best telemetry interface alias for a hotspot entity when the
+    hotspot interface name does not match telemetry naming.
+
+    Strategy:
+      - same node
+      - same queue
+      - choose candidate with tail_dropped_packets closest to preferred_tail_value
+      - if all tails are zero, choose highest occupancy candidate
+    """
+    candidates = _extract_all_queue_candidates(
+        snapshot_report=snapshot_report,
+        node=node,
+        queue=queue,
+    )
+    if not candidates:
+        return None
+
+    if preferred_tail_value > 0:
+        candidates = sorted(
+            candidates,
+            key=lambda x: (
+                abs(_safe_int(x.get("tail_dropped_packets")) - preferred_tail_value),
+                -_safe_int(x.get("peak_buffer_occupancy_percent")),
+                x.get("interface", ""),
+            ),
+        )
+    else:
+        candidates = sorted(
+            candidates,
+            key=lambda x: (
+                -_safe_int(x.get("tail_dropped_packets")),
+                -_safe_int(x.get("peak_buffer_occupancy_percent")),
+                x.get("interface", ""),
+            ),
+        )
+
+    return str(candidates[0].get("interface")) if candidates else None
+
+
+
+def _extract_qmon_queue_counters(
+    snapshot_report: Dict[str, Any],
+    *,
+    node: str,
+    interface: str,
+    queue: int,
+) -> Dict[str, int]:
+    """
+    Best-effort extractor for queue counters from telemetry snapshot JSON.
+    Tolerates multiple normalized-record shapes and multiple key spellings.
+    """
+    result = {
+        "tail_dropped_packets": 0,
+        "ecn_ce_packets": 0,
+        "red_dropped_packets": 0,
+        "resource_drops": 0,
+        "peak_buffer_occupancy_percent": 0,
+    }
+
+    def pick_from_sources(rec: Dict[str, Any], rec_fields: Dict[str, Any], *names: str) -> int:
+        for name in names:
+            if name in rec_fields:
+                return _safe_int(rec_fields.get(name))
+            if rec.get(name) is not None:
+                return _safe_int(rec.get(name))
+        return 0
+
+    def parse_queue_from_path(path: str) -> int | None:
+        if not path:
+            return None
+
+        patterns = [
+            rf"queue\[queue={queue}\]",
+            rf'queue\[name="{queue}"\]',
+            rf"queue\[name={queue}\]",
+            rf"queue\[{queue}\]",
+            rf"/queue/{queue}(?:/|$)",
+            rf"\|q{queue}(?:\b|$)",
+            rf"\bq{queue}\b",
+        ]
+
+        for pat in patterns:
+            if re.search(pat, path):
+                return queue
+        return None
+
+    def parse_interface_from_path(path: str) -> str | None:
+        if not path:
+            return None
+
+        m = re.search(r'interface\[name="?([^"\]]+)"?\]', path)
+        if m:
+            return m.group(1).strip()
+
+        if interface and interface in path:
+            return interface
+
+        return None
+
+    for node_entry in snapshot_report.get("nodes", []) or []:
+        if str(node_entry.get("node")) != str(node):
+            continue
+
+        all_records = []
+        all_records.extend(node_entry.get("normalized_records", []) or [])
+
+        for sub in node_entry.get("subscriptions", []) or []:
+            all_records.extend(sub.get("normalized_records", []) or [])
+
+        for rec in all_records:
+            rec_path = str(
+                rec.get("path")
+                or rec.get("xpath")
+                or rec.get("key")
+                or rec.get("prefix")
+                or rec.get("gnmi_prefix")
+                or ""
+            )
+            rec_fields = rec.get("fields") or rec.get("values") or {}
+
+            rec_queue = rec.get("queue")
+            rec_intf = (
+                rec.get("interface")
+                or rec.get("interface_name")
+                or rec.get("if_name")
+                or rec.get("ifname")
+                or rec.get("port")
+            )
+
+            if rec_queue is None:
+                rec_queue = parse_queue_from_path(rec_path)
+
+            if rec_intf is None:
+                rec_intf = parse_interface_from_path(rec_path)
+
+            if str(rec_intf) != str(interface) or _safe_int(rec_queue) != _safe_int(queue):
+                continue
+
+            result["tail_dropped_packets"] = max(
+                result["tail_dropped_packets"],
+                pick_from_sources(
+                    rec,
+                    rec_fields,
+                    "tail-dropped-packets",
+                    "tail-drop-pkts",
+                    "tail_drop_pkts",
+                    "tail_dropped_packets",
+                    "tail-drop-packets",
+                ),
+            )
+            result["ecn_ce_packets"] = max(
+                result["ecn_ce_packets"],
+                pick_from_sources(
+                    rec,
+                    rec_fields,
+                    "ecn-ce-packets",
+                    "ecn-marked-pkts",
+                    "ecn_marked_pkts",
+                    "ecn_ce_packets",
+                    "ecn-ce-marked-packets",
+                ),
+            )
+            result["red_dropped_packets"] = max(
+                result["red_dropped_packets"],
+                pick_from_sources(
+                    rec,
+                    rec_fields,
+                    "red-dropped-packets",
+                    "red-drop-pkts",
+                    "red_drop_pkts",
+                    "red_dropped_packets",
+                ),
+            )
+            result["resource_drops"] = max(
+                result["resource_drops"],
+                pick_from_sources(
+                    rec,
+                    rec_fields,
+                    "in-resource-drops",
+                    "resource_drops",
+                    "in_resource_drops",
+                    "resource-drop-pkts",
+                ),
+            )
+            result["peak_buffer_occupancy_percent"] = max(
+                result["peak_buffer_occupancy_percent"],
+                pick_from_sources(
+                    rec,
+                    rec_fields,
+                    "peak-buffer-occupancy-percent",
+                    "peak_buffer_occupancy_percent",
+                    "buffer-occupancy-percent",
+                    "buffer_occupancy_percent",
+                ),
+            )
+
+    return result
+
+def _resolve_queue_metrics_with_preference(
+    *,
+    entity_id: str,
+    evidence_index: Dict[str, Any],
+    baseline_metrics: Dict[str, int],
+    running_metrics: Dict[str, int],
+    post_metrics: Dict[str, int],
+) -> Dict[str, Any]:
+    """
+    Prefer RCA evidence when raw telemetry extraction is empty/incomplete.
+    Return resolved metrics plus source metadata.
+    """
+    evidence = evidence_index.get(entity_id, {}) or {}
+
+    signals = evidence.get("signals", {}) or {}
+    delta_running = evidence.get("delta_running", {}) or {}
+    delta_post = evidence.get("delta_post", {}) or {}
+
+    # Raw snapshot values
+    raw_baseline_tail = _safe_int(baseline_metrics.get("tail_dropped_packets"))
+    raw_running_tail = _safe_int(running_metrics.get("tail_dropped_packets"))
+    raw_post_tail = _safe_int(post_metrics.get("tail_dropped_packets"))
+
+    raw_baseline_ecn = _safe_int(baseline_metrics.get("ecn_ce_packets"))
+    raw_running_ecn = _safe_int(running_metrics.get("ecn_ce_packets"))
+    raw_post_ecn = _safe_int(post_metrics.get("ecn_ce_packets"))
+
+    # RCA evidence values
+    ui_total_tail = _safe_int(signals.get("tail_drop_pkts"))
+    ui_running_delta_tail = _safe_int(delta_running.get("tail-drop-pkts"))
+    ui_post_delta_tail = _safe_int(delta_post.get("tail-drop-pkts"))
+
+    ui_running_delta_ecn = _safe_int(delta_running.get("ecn-marked-pkts"))
+    ui_post_delta_ecn = _safe_int(delta_post.get("ecn-marked-pkts"))
+
+    # Heuristic:
+    # if raw extraction is all zeros but UI evidence has values, trust UI evidence
+    raw_tail_empty = (raw_baseline_tail == 0 and raw_running_tail == 0 and raw_post_tail == 0)
+    raw_ecn_empty = (raw_baseline_ecn == 0 and raw_running_ecn == 0 and raw_post_ecn == 0)
+
+    use_ui_tail = raw_tail_empty and (ui_total_tail > 0 or ui_running_delta_tail > 0 or ui_post_delta_tail > 0)
+    use_ui_ecn = raw_ecn_empty and (ui_running_delta_ecn > 0 or ui_post_delta_ecn > 0)
+
+    if use_ui_tail:
+        resolved_baseline_tail = 0
+        resolved_running_tail = ui_running_delta_tail
+        resolved_post_tail = ui_post_delta_tail
+        tail_source = "rca_ui_evidence"
+    else:
+        resolved_baseline_tail = raw_baseline_tail
+        resolved_running_tail = raw_running_tail
+        resolved_post_tail = raw_post_tail
+        tail_source = "raw_telemetry"
+
+    if use_ui_ecn:
+        resolved_baseline_ecn = 0
+        resolved_running_ecn = ui_running_delta_ecn
+        resolved_post_ecn = ui_post_delta_ecn
+        ecn_source = "rca_ui_evidence"
+    else:
+        resolved_baseline_ecn = raw_baseline_ecn
+        resolved_running_ecn = raw_running_ecn
+        resolved_post_ecn = raw_post_ecn
+        ecn_source = "raw_telemetry"
+
+    return {
+        "baseline_tail": resolved_baseline_tail,
+        "running_tail": resolved_running_tail,
+        "post_tail": resolved_post_tail,
+        "baseline_ecn": resolved_baseline_ecn,
+        "running_ecn": resolved_running_ecn,
+        "post_ecn": resolved_post_ecn,
+        "tail_source": tail_source,
+        "ecn_source": ecn_source,
+        "raw_baseline_metrics": baseline_metrics,
+        "raw_running_metrics": running_metrics,
+        "raw_post_metrics": post_metrics,
+        "ui_signals": signals,
+        "ui_delta_running": delta_running,
+        "ui_delta_post": delta_post,
+    }
+
+
+def _compute_delta_bundle(
+    *,
+    baseline_metrics: Dict[str, int],
+    running_metrics: Dict[str, int],
+    post_metrics: Dict[str, int],
+) -> Dict[str, float]:
+    baseline_tail = _safe_int(baseline_metrics.get("tail_dropped_packets"))
+    running_tail = _safe_int(running_metrics.get("tail_dropped_packets"))
+    post_tail = _safe_int(post_metrics.get("tail_dropped_packets"))
+
+    baseline_ecn = _safe_int(baseline_metrics.get("ecn_ce_packets"))
+    running_ecn = _safe_int(running_metrics.get("ecn_ce_packets"))
+    post_ecn = _safe_int(post_metrics.get("ecn_ce_packets"))
+
+    baseline_red = _safe_int(baseline_metrics.get("red_dropped_packets"))
+    running_red = _safe_int(running_metrics.get("red_dropped_packets"))
+    post_red = _safe_int(post_metrics.get("red_dropped_packets"))
+
+    baseline_resource = _safe_int(baseline_metrics.get("resource_drops"))
+    running_resource = _safe_int(running_metrics.get("resource_drops"))
+    post_resource = _safe_int(post_metrics.get("resource_drops"))
+
+    rise_tail = max(0, running_tail - baseline_tail)
+    linger_tail = max(0, post_tail - baseline_tail)
+
+    rise_ecn = max(0, running_ecn - baseline_ecn)
+    linger_ecn = max(0, post_ecn - baseline_ecn)
+
+    rise_red = max(0, running_red - baseline_red)
+    linger_red = max(0, post_red - baseline_red)
+
+    rise_resource = max(0, running_resource - baseline_resource)
+    linger_resource = max(0, post_resource - baseline_resource)
+
+    recovery_ratio_tail = float(linger_tail / rise_tail) if rise_tail > 0 else 0.0
+    recovery_ratio_ecn = float(linger_ecn / rise_ecn) if rise_ecn > 0 else 0.0
+    recovery_ratio_red = float(linger_red / rise_red) if rise_red > 0 else 0.0
+    recovery_ratio_resource = float(linger_resource / rise_resource) if rise_resource > 0 else 0.0
+
+    if rise_tail <= 0 and rise_ecn <= 0 and rise_red <= 0 and rise_resource <= 0:
+        event_delta_classification = "no_event_delta"
+    elif rise_tail <= 0 and rise_red <= 0 and rise_resource <= 0 and rise_ecn > 0:
+        if recovery_ratio_ecn <= 0.2:
+            event_delta_classification = "expected_ecn_transient"
+        else:
+            event_delta_classification = "lingering_ecn_pressure"
+    else:
+        if rise_tail > 0:
+            if recovery_ratio_tail <= 0.2:
+                event_delta_classification = "expected_transient_taildrop"
+            elif recovery_ratio_tail <= 0.8:
+                event_delta_classification = "lingering_taildrop"
+            else:
+                event_delta_classification = "persistent_taildrop"
+        else:
+            if recovery_ratio_red > 0.8 or recovery_ratio_resource > 0.8:
+                event_delta_classification = "persistent_resource_pressure"
+            else:
+                event_delta_classification = "transient_non_tail_pressure"
+
+    return {
+        "delta_tail_dropped_packets": float(rise_tail),
+        "delta_ecn_ce_packets": float(rise_ecn),
+        "delta_red_dropped_packets": float(rise_red),
+        "delta_resource_drops": float(rise_resource),
+
+        "post_tail_dropped_packets": float(linger_tail),
+        "post_ecn_ce_packets": float(linger_ecn),
+        "post_red_dropped_packets": float(linger_red),
+        "post_resource_drops": float(linger_resource),
+
+        "rise_tail_dropped_packets": float(rise_tail),
+        "linger_tail_dropped_packets": float(linger_tail),
+        "rise_ecn_ce_packets": float(rise_ecn),
+        "linger_ecn_ce_packets": float(linger_ecn),
+        "rise_red_dropped_packets": float(rise_red),
+        "linger_red_dropped_packets": float(linger_red),
+        "rise_resource_drops": float(rise_resource),
+        "linger_resource_drops": float(linger_resource),
+
+        "recovery_ratio_tail": recovery_ratio_tail,
+        "recovery_ratio_ecn": recovery_ratio_ecn,
+        "recovery_ratio_red": recovery_ratio_red,
+        "recovery_ratio_resource": recovery_ratio_resource,
+
+        "event_delta_classification": event_delta_classification,
+    }
+
+
+def _classify_linger_trend(values: list[float], flat_tolerance: float = 0.05) -> str:
+    if not values:
+        return "unknown"
+
+    if len(values) == 1:
+        return "single_sample"
+
+    if max(values) <= 0:
+        return "cleared"
+
+    decreasing = all(values[i] <= values[i - 1] for i in range(1, len(values)))
+    increasing = all(values[i] >= values[i - 1] for i in range(1, len(values)))
+
+    span = max(values) - min(values)
+    denom = max(max(values), 1.0)
+    relative_span = span / denom
+
+    if relative_span <= flat_tolerance:
+        return "flat"
+    if decreasing and values[-1] < values[0]:
+        return "decreasing"
+    if increasing and values[-1] > values[0]:
+        return "increasing"
+    return "mixed"
+
+
+def inject_phase_delta_into_ui_report(
+    *,
+    ui_report_path: str,
+    baseline_telemetry_path: str,
+    running_telemetry_path: str,
+    post_telemetry_path: str,
+    post_sample_paths: list[str] | None = None,
+) -> None:
+    ui_report = _load_json_if_exists(ui_report_path)
+    if not ui_report:
+        raise RuntimeError(f"failed to load ui_report: {ui_report_path}")
+
+    baseline_report = _load_json_if_exists(baseline_telemetry_path)
+    running_report = _load_json_if_exists(running_telemetry_path)
+    post_report = _load_json_if_exists(post_telemetry_path)
+
+    post_reports = []
+    for p in (post_sample_paths or [post_telemetry_path]):
+        loaded = _load_json_if_exists(p)
+        if loaded:
+            post_reports.append(loaded)
+
+    hotspot_entities = _extract_hotspot_entities_from_ui(ui_report)
+    evidence_index = ui_report.get("evidence_index", {}) or {}
+
+    for item in hotspot_entities:
+        entity_id = item["entity_id"]
+        node = item["node"]
+        interface = item["interface"]
+        queue = item["queue"]
+
+        evidence = evidence_index.get(entity_id, {}) or {}
+        signals = evidence.get("signals", {}) or {}
+        preferred_tail_value = _safe_int(signals.get("tail_drop_pkts"))
+
+        resolved_interface = interface
+
+        # ------------------------------------------------------------------
+        # First pass: exact interface extraction on baseline/running/post
+        # ------------------------------------------------------------------
+        baseline_metrics = _extract_qmon_queue_counters(
+            baseline_report, node=node, interface=resolved_interface, queue=queue
+        )
+        running_metrics = _extract_qmon_queue_counters(
+            running_report, node=node, interface=resolved_interface, queue=queue
+        )
+        post_metrics = _extract_qmon_queue_counters(
+            post_report, node=node, interface=resolved_interface, queue=queue
+        )
+
+        exact_match_failed = (
+            _safe_int(baseline_metrics.get("tail_dropped_packets")) == 0
+            and _safe_int(running_metrics.get("tail_dropped_packets")) == 0
+            and _safe_int(post_metrics.get("tail_dropped_packets")) == 0
+        )
+
+        # ------------------------------------------------------------------
+        # Alias resolution pass 1: if exact baseline/running/post all failed
+        # ------------------------------------------------------------------
+        if exact_match_failed:
+            alias_interface = _resolve_telemetry_interface_alias(
+                snapshot_report=post_report,
+                node=node,
+                queue=queue,
+                preferred_tail_value=preferred_tail_value,
+            )
+
+            if alias_interface:
+                resolved_interface = alias_interface
+
+                baseline_metrics = _extract_qmon_queue_counters(
+                    baseline_report,
+                    node=node,
+                    interface=resolved_interface,
+                    queue=queue,
+                )
+                running_metrics = _extract_qmon_queue_counters(
+                    running_report,
+                    node=node,
+                    interface=resolved_interface,
+                    queue=queue,
+                )
+                post_metrics = _extract_qmon_queue_counters(
+                    post_report,
+                    node=node,
+                    interface=resolved_interface,
+                    queue=queue,
+                )
+
+        resolved = _resolve_queue_metrics_with_preference(
+            entity_id=entity_id,
+            evidence_index=evidence_index,
+            baseline_metrics=baseline_metrics,
+            running_metrics=running_metrics,
+            post_metrics=post_metrics,
+        )
+
+        baseline_tail = _safe_int(resolved["baseline_tail"])
+        running_tail = _safe_int(resolved["running_tail"])
+        post_tail = _safe_int(resolved["post_tail"])
+
+        baseline_ecn = _safe_int(resolved["baseline_ecn"])
+        running_ecn = _safe_int(resolved["running_ecn"])
+        post_ecn = _safe_int(resolved["post_ecn"])
+
+        # Build normalized metrics from resolved source-of-truth values
+        normalized_baseline_metrics = dict(baseline_metrics)
+        normalized_running_metrics = dict(running_metrics)
+        normalized_post_metrics = dict(post_metrics)
+
+        normalized_baseline_metrics["tail_dropped_packets"] = baseline_tail
+        normalized_running_metrics["tail_dropped_packets"] = running_tail
+        normalized_post_metrics["tail_dropped_packets"] = post_tail
+
+        normalized_baseline_metrics["ecn_ce_packets"] = baseline_ecn
+        normalized_running_metrics["ecn_ce_packets"] = running_ecn
+        normalized_post_metrics["ecn_ce_packets"] = post_ecn
+
+        delta_bundle = _compute_delta_bundle(
+            baseline_metrics=normalized_baseline_metrics,
+            running_metrics=normalized_running_metrics,
+            post_metrics=normalized_post_metrics,
+        )
+
+        rise_tail = max(0, running_tail - baseline_tail)
+        linger_tail = max(0, post_tail - baseline_tail)
+
+        rise_ecn = max(0, running_ecn - baseline_ecn)
+        linger_ecn = max(0, post_ecn - baseline_ecn)
+
+        delta_bundle["rise_tail_dropped_packets"] = float(rise_tail)
+        delta_bundle["linger_tail_dropped_packets"] = float(linger_tail)
+        delta_bundle["rise_ecn_ce_packets"] = float(rise_ecn)
+        delta_bundle["linger_ecn_ce_packets"] = float(linger_ecn)
+
+        # ------------------------------------------------------------------
+        # Sample-aware alias resolution:
+        # Even if baseline/running/post looked usable, recovery samples may
+        # still fail for the hotspot interface name. Detect that and re-resolve
+        # against recovery reports.
+        # ------------------------------------------------------------------
+        provisional_tail_values = []
+
+        for report in post_reports:
+            pm_try = _extract_qmon_queue_counters(
+                report,
+                node=node,
+                interface=resolved_interface,
+                queue=queue,
+            )
+            provisional_tail_values.append(_safe_int(pm_try.get("tail_dropped_packets")))
+
+        all_post_samples_zero = all(v == 0 for v in provisional_tail_values)
+
+        if all_post_samples_zero and post_tail > 0:
+            alias_interface = _resolve_telemetry_interface_alias_from_reports(
+                reports=post_reports,
+                node=node,
+                queue=queue,
+                preferred_tail_value=post_tail if post_tail > 0 else preferred_tail_value,
+            )
+            if alias_interface:
+                resolved_interface = alias_interface
+
+        tail_lingers = []
+        ecn_lingers = []
+        post_sample_metrics = []
+
+        for report in post_reports:
+            pm = _extract_qmon_queue_counters(
+                report,
+                node=node,
+                interface=resolved_interface,
+                queue=queue,
+            )
+            post_sample_metrics.append(pm)
+
+            # fallback to UI evidence if raw sample extraction is empty
+            pm_tail = _safe_int(pm.get("tail_dropped_packets"))
+            pm_ecn = _safe_int(pm.get("ecn_ce_packets"))
+
+            if pm_tail == 0 and resolved["tail_source"] == "rca_ui_evidence":
+                pm_tail = post_tail
+
+            if pm_ecn == 0 and resolved["ecn_source"] == "rca_ui_evidence":
+                pm_ecn = post_ecn
+
+            tail_linger_val = max(0, pm_tail - baseline_tail)
+            ecn_linger_val = max(0, pm_ecn - baseline_ecn)
+
+            tail_lingers.append(float(tail_linger_val))
+            ecn_lingers.append(float(ecn_linger_val))
+
+        delta_bundle["post_tail_linger_series"] = tail_lingers
+        delta_bundle["post_ecn_linger_series"] = ecn_lingers
+        delta_bundle["tail_linger_trend"] = _classify_linger_trend(tail_lingers)
+        delta_bundle["ecn_linger_trend"] = _classify_linger_trend(ecn_lingers)
+        delta_bundle["post_sample_metrics"] = post_sample_metrics
+        delta_bundle["metric_resolution"] = {
+            "tail_source": resolved["tail_source"],
+            "ecn_source": resolved["ecn_source"],
+        }
+        delta_bundle["telemetry_interface_resolved"] = resolved_interface
+        delta_bundle["telemetry_interface_match_mode"] = (
+            "exact" if resolved_interface == interface else "alias_resolved"
+        )
+
+        for hotspot in ui_report.get("hotspots", []) or []:
+            if str(hotspot.get("entity_id")) == entity_id:
+                hotspot.update(delta_bundle)
+                hotspot["baseline_metrics"] = normalized_baseline_metrics
+                hotspot["running_metrics"] = normalized_running_metrics
+                hotspot["post_metrics"] = normalized_post_metrics
+
+        if entity_id in evidence_index and isinstance(evidence_index[entity_id], dict):
+            evidence_index[entity_id].update(delta_bundle)
+            evidence_index[entity_id]["baseline_metrics"] = normalized_baseline_metrics
+            evidence_index[entity_id]["running_metrics"] = normalized_running_metrics
+            evidence_index[entity_id]["post_metrics"] = normalized_post_metrics
+
+    ui_report["evidence_index"] = evidence_index
+
+    with open(ui_report_path, "w", encoding="utf-8") as f:
+        json.dump(ui_report, f, indent=2)
+
+
+def main() -> int:
+    args = parse_args()
+
+    print(
+        f"[PHASE TIMING] baseline_window={args.baseline_window}s, "
+        f"running_decay={args.running_decay}s, "
+        f"settle_gap={args.settle_gap}s, "
+        f"post_window={args.post_window}s, "
+        f"post_wait={args.post_wait}s, "
+        f"post_sample_count={args.post_sample_count}, "
+        f"post_sample_interval={args.post_sample_interval}s"
+    )
+
+    if args.stress_orchestrator_report:
+        try:
+            stress_report = load_json_file(args.stress_orchestrator_report)
+            verdict = stress_report.get("verdict", {}) or {}
+            precheck_before_stress = verdict.get("precheck_before_stress")
+            overall_status = stress_report.get("overall_status")
+
+            print(f"[RCA-GATE] precheck_before_stress={precheck_before_stress}")
+            print(f"[RCA-GATE] overall_status={overall_status}")
+
+            if precheck_before_stress is False:
+                print(
+                    "\n[RCA-GATE] ABORTING RCA: Fabric already unhealthy before event "
+                    "(precheck_before_stress=False)\n",
+                    file=sys.stderr,
+                )
+                return 1
+
+        except Exception as exc:
+            print(f"[RCA-GATE] warning: failed to read stress report: {exc}", file=sys.stderr)
+            return 1
+
+    progress = ProgressLogger(progress_log_path(args.run_id))
+    progress.stage("RUN_RCA_CASE_START")
+    progress.info(f"run_id={args.run_id}")
+    progress.info(f"profile={args.profile}")
+    progress.info(f"nodes={args.nodes}")
+    progress.info(f"enable_live_monitor={args.enable_live_monitor}")
+    progress.info(f"enable_port_stats={args.enable_port_stats}")
+
+    progress.stage("PHASE_TIMELINE")
+    progress.info(f"baseline_window={args.baseline_window}")
+    progress.info(f"running_decay={args.running_decay}")
+    progress.info(f"settle_gap={args.settle_gap}")
+    progress.info(f"post_window={args.post_window}")
+
+    status = {
+        "pre_snapshot": "pending",
+        "pre_event_cleanliness": "pending",
+        "running_snapshot": "pending",
+        "post_snapshot": "pending",
+        "congestion_analysis": "pending",
+        "fabric_ranking": "pending",
+        "delta_analysis": "pending",
+        "telemetry_diff": "pending",
+        "telemetry_analyzer": "pending",
+        "rocev2_pre": "pending",
+        "rocev2_post": "pending",
+        "rocev2_verdict": "pending",
+        "rocev2_deep_inspection": "pending",
+        "rocev2_hotspot_report": "pending",
+        "ixia_live_monitor": "skipped",
+        "ixia_port_pre": "skipped",
+        "ixia_port_post": "skipped",
+        "traffic_verifier": "skipped",
+        "congestion_inspection": "pending",
+        "root_cause_correlation": "pending",
+        "intent_rca": "pending",
+        "cos_hotspot_correlation": "skipped",
+    }
+    file_overrides = {}
+
+    try:
+        progress.stage("IXIA_SESSION_INIT")
+        inv = load_json_file(args.ixia_inventory)
+        api_server = inv.get("ixnetwork_api_server")
+        if not api_server:
+            raise RuntimeError("ixnetwork_api_server not found in ixia inventory")
+
+        progress.info(f"ixia_api_server={api_server}")
+
+        ixia = IxiaClient(
+            api_server=api_server,
+            inventory_path=args.ixia_inventory,
+            timeout=args.timeout,
+            verify_tls=False,
+        )
+
+        sid = ixia.resolve_session_id(args.ixia_session_id)
+        progress.info(f"ixia_session_id={sid}")
+
+        # ------------------------------------------------------------------
+        # PRE = traffic-on baseline snapshot
+        # ------------------------------------------------------------------
+        progress.stage("PREPARE_PRE_STAGE")
+        progress.info("Starting traffic for BASELINE (PRE) stage")
+        print("\n[IXIA] starting traffic for BASELINE snapshot ...")
+        ixia.start_traffic(sid)
+
+        progress.info(f"Waiting baseline stabilization window={args.baseline_window}s")
+        time.sleep(args.baseline_window)
+
+        progress.stage("PRE_TELEMETRY_SNAPSHOT")
+        progress.info("Collecting PRE (baseline with traffic) telemetry snapshot")
+
+        collect_snapshot(
+            run_id=args.run_id,
+            snapshot_name="pre",
+            profile=args.profile,
+            nodes=args.nodes,
+            timeout=args.timeout,
+            topology_path=args.topology,
+        )
+
+        pre_report = load_json(telemetry_json_path(args.run_id, "pre", args.profile))
+        pre_event_cleanliness = evaluate_pre_event_cleanliness(pre_report)
+        file_overrides["pre_event_cleanliness"] = pre_event_cleanliness
+        status["pre_event_cleanliness"] = "ok" if pre_event_cleanliness.get("pass") else "contaminated"
+        progress.info(f"pre_event_cleanliness={pre_event_cleanliness}")
+
+        pre_snapshot_path = telemetry_json_path(args.run_id, "pre", args.profile)
+        ensure_file(pre_snapshot_path)
+        pre_health = load_snapshot_health(pre_snapshot_path)
+        status["pre_snapshot"] = derive_snapshot_status(pre_health)
+
+        progress.info(
+            f"PRE snapshot health: ok_nodes={pre_health['ok_nodes']} "
+            f"failed_nodes={pre_health['failed_nodes']} "
+            f"status={status['pre_snapshot']}"
+        )
+        progress.info(f"PRE telemetry snapshot complete: {telemetry_json_path(args.run_id, 'pre', args.profile)}")
+
+        progress.stage("PRE_ROCE_CAPTURE")
+        try:
+            pre_roce_path = _run_roce_stats(
+                run_id=args.run_id,
+                snapshot_name="rocev2_pre",
+                timeout=args.timeout,
+                ixia_inventory=args.ixia_inventory,
+                session_id=sid,
+            )
+            file_overrides["rocev2_pre"] = pre_roce_path
+            status["rocev2_pre"] = "ok"
+            progress.info(f"PRE RoCE stats complete: {pre_roce_path}")
+        except Exception as exc:
+            status["rocev2_pre"] = "failed"
+            status["rocev2_pre_error"] = str(exc)
+            progress.error(f"PRE RoCE stats failed: {exc}")
+
+        if args.enable_port_stats:
+            progress.stage("PRE_PORT_STATS_CAPTURE")
+            try:
+                port_pre = _run_ixia_port_stats(
+                    run_id=args.run_id,
+                    snapshot_name="ixia_port_pre",
+                    timeout=args.timeout,
+                    ixia_inventory=args.ixia_inventory,
+                    session_id=sid,
+                )
+                file_overrides["ixia_port_pre"] = port_pre
+                status["ixia_port_pre"] = "ok"
+                progress.info(f"PRE port stats complete: {port_pre}")
+            except Exception as exc:
+                status["ixia_port_pre"] = "failed"
+                status["ixia_port_pre_error"] = str(exc)
+                progress.error(f"PRE port stats failed: {exc}")
+
+
+                # ------------------------------------------------------------------
+        # RUNNING = continue traffic, wait, then snapshot
+        # ------------------------------------------------------------------
+        progress.stage("RUNNING_STAGE_WAIT")
+        progress.info(f"Traffic already running; sleeping running_wait={args.running_wait}s")
+        time.sleep(args.running_wait)
+
+        if args.enable_live_monitor:
+            progress.stage("LIVE_MONITOR_STAGE")
+            progress.info(
+                f"Starting live monitor iterations={args.live_monitor_iterations} interval={args.live_monitor_interval}s"
+            )
+            try:
+                live_path = _run_ixia_live_monitor(
+                    run_id=args.run_id,
+                    timeout=args.timeout,
+                    ixia_inventory=args.ixia_inventory,
+                    session_id=sid,
+                    iterations=args.live_monitor_iterations,
+                    poll_interval=args.live_monitor_interval,
+                )
+                file_overrides["ixia_live_monitor"] = live_path
+                status["ixia_live_monitor"] = "ok"
+                progress.info(f"Live monitor complete: {live_path}")
+            except Exception as exc:
+                status["ixia_live_monitor"] = "failed"
+                status["ixia_live_monitor_error"] = str(exc)
+                progress.error(f"Live monitor failed: {exc}")
+
+        # ------------------------------------------------------------------
+        # RUNNING snapshot: immediate event impact under traffic
+        # ------------------------------------------------------------------
+        progress.stage("RUNNING_TELEMETRY_SNAPSHOT")
+        progress.info("Collecting RUNNING telemetry snapshot")
+        collect_snapshot(
+            run_id=args.run_id,
+            snapshot_name="running",
+            profile=args.profile,
+            nodes=args.nodes,
+            timeout=args.timeout,
+            topology_path=args.topology,
+        )
+
+        running_report = load_json(telemetry_json_path(args.run_id, "running", args.profile))
+        running_snapshot_path = telemetry_json_path(args.run_id, "running", args.profile)
+        ensure_file(running_snapshot_path)
+        running_health = load_snapshot_health(running_snapshot_path)
+        status["running_snapshot"] = derive_snapshot_status(running_health)
+
+        progress.info(
+            f"RUNNING snapshot health: ok_nodes={running_health['ok_nodes']} "
+            f"failed_nodes={running_health['failed_nodes']} "
+            f"status={status['running_snapshot']}"
+        )
+        progress.info(f"RUNNING telemetry snapshot complete: {running_snapshot_path}")
+
+        # ------------------------------------------------------------------
+        # RECOVERY samples with traffic still ON
+        # Final sample is canonical "post"
+        # ------------------------------------------------------------------
+        recovery_sample_paths: List[str] = []
+        recovery_sample_names: List[str] = []
+        recovery_sample_health: List[Dict[str, Any]] = []
+        
+        sample_interval = max(1, int(args.post_sample_interval))
+        sample_count = max(1, int(args.post_sample_count))
+
+        # If post_window implies more samples than explicitly requested, use the larger count
+        window_implied_count = max(1, int(args.post_window // sample_interval))
+        if (window_implied_count * sample_interval) < int(args.post_window):
+            window_implied_count += 1
+
+        sample_count = max(sample_count, window_implied_count)
+
+        progress.info(
+            f"Recovery sampling plan: sample_count={sample_count} "
+            f"sample_interval={sample_interval}s total_window~={sample_count * sample_interval}s"
+        )
+
+        for idx in range(1, sample_count + 1):
+            sample_name = "post" if idx == sample_count else f"recover_{idx}"
+            recovery_sample_names.append(sample_name)
+
+            progress.info(f"Waiting {sample_interval}s before {sample_name} snapshot (traffic still running)")
+            time.sleep(sample_interval)
+
+            progress.stage(f"{sample_name.upper()}_TELEMETRY_SNAPSHOT")
+            progress.info(f"Collecting {sample_name} telemetry snapshot with traffic ON")
+
+            collect_snapshot(
+                run_id=args.run_id,
+                snapshot_name=sample_name,
+                profile=args.profile,
+                nodes=args.nodes,
+                timeout=args.timeout,
+                topology_path=args.topology,
+            )
+
+            sample_path = telemetry_json_path(args.run_id, sample_name, args.profile)
+            ensure_file(sample_path)
+
+            sample_health = load_snapshot_health(sample_path)
+            recovery_sample_paths.append(sample_path)
+            recovery_sample_health.append(sample_health)
+
+            progress.info(
+                f"{sample_name.upper()} snapshot health: ok_nodes={sample_health['ok_nodes']} "
+                f"failed_nodes={sample_health['failed_nodes']} "
+                f"status={derive_snapshot_status(sample_health)}"
+            )
+            progress.info(f"{sample_name.upper()} telemetry snapshot complete: {sample_path}")
+
+        # Canonical POST = last recovery sample under traffic
+        post_snapshot_path = recovery_sample_paths[-1]
+        post_report = load_json(post_snapshot_path)
+        post_health = recovery_sample_health[-1]
+        status["post_snapshot"] = derive_snapshot_status(post_health)
+
+        # Expose full recovery series for trend analysis
+        file_overrides["post_sample_paths"] = recovery_sample_paths
+        file_overrides["post_sample_names"] = recovery_sample_names
+
+        file_overrides["phase_windows"] = {
+            "baseline_window": int(args.baseline_window),
+            "running_decay": int(args.running_decay),
+            "settle_gap": int(args.settle_gap),
+            "post_window": int(args.post_window),
+            "post_wait": int(args.post_wait),
+            "post_sample_count": int(sample_count),
+            "post_sample_interval": int(sample_interval),
+        }
+
+        # ------------------------------------------------------------------
+        # POST RoCE / Port stats while traffic is still ON
+        # ------------------------------------------------------------------
+        progress.stage("POST_ROCE_CAPTURE")
+        try:
+            post_roce_path = _run_roce_stats(
+                run_id=args.run_id,
+                snapshot_name="rocev2_post",
+                timeout=args.timeout,
+                ixia_inventory=args.ixia_inventory,
+                session_id=sid,
+            )
+            file_overrides["rocev2_post"] = post_roce_path
+            status["rocev2_post"] = "ok"
+            progress.info(f"POST RoCE stats complete: {post_roce_path}")
+        except Exception as exc:
+            status["rocev2_post"] = "failed"
+            status["rocev2_post_error"] = str(exc)
+            progress.error(f"POST RoCE stats failed: {exc}")
+
+        if args.enable_port_stats:
+            progress.stage("POST_PORT_STATS_CAPTURE")
+            try:
+                port_post = _run_ixia_port_stats(
+                    run_id=args.run_id,
+                    snapshot_name="ixia_port_post",
+                    timeout=args.timeout,
+                    ixia_inventory=args.ixia_inventory,
+                    session_id=sid,
+                )
+                file_overrides["ixia_port_post"] = port_post
+                status["ixia_port_post"] = "ok"
+                progress.info(f"POST port stats complete: {port_post}")
+            except Exception as exc:
+                status["ixia_port_post"] = "failed"
+                status["ixia_port_post_error"] = str(exc)
+                progress.error(f"POST port stats failed: {exc}")
+
+        # ------------------------------------------------------------------
+        # Stop traffic only after the full recovery-under-load series
+        # ------------------------------------------------------------------
+        progress.stage("STOP_TRAFFIC_AFTER_POST_SERIES")
+        progress.info("Stopping traffic after POST recovery series")
+        print("\n[IXIA] stopping traffic after POST recovery series ...")
+        ixia.stop_traffic(sid)
+
+        if args.resume_after_post:
+            progress.stage("RESUME_TRAFFIC_AFTER_POST")
+            progress.info("Resuming traffic after POST recovery series")
+            print("\n[IXIA] resuming traffic after POST recovery series ...")
+            ixia.start_traffic(sid)
+            progress.info("Traffic resumed after POST recovery series")
+
+        telemetry_usable = any(
+            s in ("ok", "partial")
+            for s in (
+                status["pre_snapshot"],
+                status["running_snapshot"],
+                status["post_snapshot"],
+            )
+        ) and status["running_snapshot"] in ("ok", "partial")
+
+        if not telemetry_usable:
+            progress.warn("Telemetry unusable across snapshots; skipping telemetry-dependent RCA stages")
+            status["congestion_analysis"] = "failed"
+            status["fabric_ranking"] = "failed"
+            status["delta_analysis"] = "failed"
+            status["telemetry_diff"] = "failed"
+            status["telemetry_analyzer"] = "failed"
+
+        progress.stage("RUNNING_CONGESTION_ANALYSIS")
+        progress.info("Running congestion analysis on RUNNING snapshot")
+        run_congestion_analysis(args.run_id, args.profile)
+        ensure_file(congestion_json_path(args.run_id, "running", args.profile))
+        status["congestion_analysis"] = "ok"
+        progress.info(f"Congestion analysis complete: {congestion_json_path(args.run_id, 'running', args.profile)}")
+
+        progress.stage("FABRIC_HOTSPOT_RANKING")
+        progress.info(f"Running fabric hotspot ranking top_n={args.top_n}")
+        run_fabric_ranker(args.run_id, args.profile, args.top_n)
+        ensure_file(fabric_hotspot_json_path(args.run_id, "running", args.profile))
+        status["fabric_ranking"] = "ok"
+        progress.info(f"Fabric hotspot ranking complete: {fabric_hotspot_json_path(args.run_id, 'running', args.profile)}")
+
+        if telemetry_usable:
+            progress.stage("RUNNING_CONGESTION_ANALYSIS")
+            progress.info("Running congestion analysis on RUNNING snapshot")
+            run_congestion_analysis(args.run_id, args.profile)
+            ensure_file(congestion_json_path(args.run_id, "running", args.profile))
+            status["congestion_analysis"] = "ok"
+            progress.info(
+                f"Congestion analysis complete: {congestion_json_path(args.run_id, 'running', args.profile)}"
+            )
+
+            progress.stage("FABRIC_HOTSPOT_RANKING")
+            progress.info(f"Running fabric hotspot ranking top_n={args.top_n}")
+            run_fabric_ranker(args.run_id, args.profile, args.top_n)
+            ensure_file(fabric_hotspot_json_path(args.run_id, "running", args.profile))
+            status["fabric_ranking"] = "ok"
+            progress.info(
+                f"Fabric hotspot ranking complete: {fabric_hotspot_json_path(args.run_id, 'running', args.profile)}"
+            )
+
+            progress.stage("DELTA_ANALYSIS")
+            progress.info("Running pre/running/post delta analysis")
+            run_delta_analysis(args.run_id, args.profile, args.top_n)
+            status["delta_analysis"] = "ok"
+            progress.info(
+                f"Delta analysis complete: {delta_json_path(args.run_id, 'running', args.profile)}"
+            )
+
+            progress.stage("TELEMETRY_DIFF_AND_ANALYZER")
+            progress.info("Running telemetry diff and anomaly analyzer")
+            telemetry_outputs = run_telemetry_diff_and_analyzer(args.run_id, args.profile)
+
+            if telemetry_outputs.get("telemetry_diff"):
+                file_overrides["telemetry_diff"] = telemetry_outputs["telemetry_diff"]
+                status["telemetry_diff"] = "ok"
+                progress.info(f"Telemetry diff complete: {telemetry_outputs['telemetry_diff']}")
+            else:
+                status["telemetry_diff"] = "failed"
+                status["telemetry_diff_error"] = telemetry_outputs.get("telemetry_diff_error")
+                progress.warn(f"Telemetry diff failed: {status['telemetry_diff_error']}")
+
+            if telemetry_outputs.get("telemetry_analyzer"):
+                file_overrides["telemetry_analyzer"] = telemetry_outputs["telemetry_analyzer"]
+                status["telemetry_analyzer"] = "ok"
+                progress.info(f"Telemetry analyzer complete: {telemetry_outputs['telemetry_analyzer']}")
+            else:
+                status["telemetry_analyzer"] = "failed"
+                status["telemetry_analyzer_error"] = telemetry_outputs.get("telemetry_analyzer_error")
+                progress.warn(f"Telemetry analyzer failed: {status['telemetry_analyzer_error']}")
+        else:
+            progress.stage("TELEMETRY_DEPENDENT_STAGES_SKIPPED")
+            progress.warn("Skipping telemetry-dependent RCA stages because RUNNING snapshot is not usable")
+            status["congestion_analysis"] = "failed"
+            status["fabric_ranking"] = "failed"
+            status["delta_analysis"] = "failed"
+            status["telemetry_diff"] = "failed"
+            status["telemetry_analyzer"] = "failed"
+
+        if file_overrides.get("rocev2_pre") and file_overrides.get("rocev2_post"):
+            progress.stage("ROCE_VERIFIER")
+            try:
+                verdict_path = _run_roce_verifier(
+                    run_id=args.run_id,
+                    pre_path=file_overrides["rocev2_pre"],
+                    post_path=file_overrides["rocev2_post"],
+                )
+                file_overrides["rocev2_verdict"] = verdict_path
+                status["rocev2_verdict"] = "ok"
+                progress.info(f"RoCE verifier complete: {verdict_path}")
+            except Exception as exc:
+                status["rocev2_verdict"] = "failed"
+                status["rocev2_verdict_error"] = str(exc)
+                progress.error(f"RoCE verifier failed: {exc}")
+
+        if file_overrides.get("rocev2_verdict"):
+            progress.stage("ROCE_DEEP_INSPECTION")
+            try:
+                deep_path = _run_roce_deep(
+                    run_id=args.run_id,
+                    pre_path=file_overrides["rocev2_pre"],
+                    post_path=file_overrides["rocev2_post"],
+                    verdict_path=file_overrides["rocev2_verdict"],
+                )
+                file_overrides["rocev2_deep_inspection"] = deep_path
+                status["rocev2_deep_inspection"] = "ok"
+                progress.info(f"RoCE deep inspection complete: {deep_path}")
+            except Exception as exc:
+                status["rocev2_deep_inspection"] = "failed"
+                status["rocev2_deep_inspection_error"] = str(exc)
+                progress.error(f"RoCE deep inspection failed: {exc}")
+
+        if file_overrides.get("rocev2_deep_inspection"):
+            progress.stage("ROCE_HOTSPOT_REPORT")
+            try:
+                hotspot_path = _run_roce_hotspot(
+                    run_id=args.run_id,
+                    deep_path=file_overrides["rocev2_deep_inspection"],
+                )
+                file_overrides["rocev2_hotspot_report"] = hotspot_path
+                status["rocev2_hotspot_report"] = "ok"
+                progress.info(f"RoCE hotspot report complete: {hotspot_path}")
+            except Exception as exc:
+                status["rocev2_hotspot_report"] = "failed"
+                status["rocev2_hotspot_report_error"] = str(exc)
+                progress.error(f"RoCE hotspot report failed: {exc}")
+
+        if file_overrides.get("rocev2_verdict") and file_overrides.get("rocev2_deep_inspection") and file_overrides.get("rocev2_hotspot_report"):
+            progress.stage("CONGESTION_INSPECTOR")
+            try:
+                congestion_path = _run_congestion_inspector(
+                    run_id=args.run_id,
+                    verdict_path=file_overrides["rocev2_verdict"],
+                    deep_path=file_overrides["rocev2_deep_inspection"],
+                    hotspot_path=file_overrides["rocev2_hotspot_report"],
+                    pre_port_stats=file_overrides.get("ixia_port_pre"),
+                    post_port_stats=file_overrides.get("ixia_port_post"),
+                )
+                file_overrides["congestion_inspection"] = congestion_path
+                status["congestion_inspection"] = "ok"
+                progress.info(f"Congestion inspection complete: {congestion_path}")
+            except Exception as exc:
+                status["congestion_inspection"] = "failed"
+                status["congestion_inspection_error"] = str(exc)
+                progress.error(f"Congestion inspection failed: {exc}")
+
+        if file_overrides.get("congestion_inspection"):
+            progress.stage("ROOT_CAUSE_CORRELATOR")
+            try:
+                root_cause = _run_root_cause_correlator(
+                    run_id=args.run_id,
+                    congestion_path=file_overrides["congestion_inspection"],
+                    ixia_inventory=args.ixia_inventory,
+                )
+                file_overrides["root_cause_correlation"] = root_cause
+                status["root_cause_correlation"] = "ok"
+                progress.info(f"Root cause correlation complete: {root_cause}")
+            except Exception as exc:
+                status["root_cause_correlation"] = "failed"
+                status["root_cause_correlation_error"] = str(exc)
+                progress.error(f"Root cause correlation failed: {exc}")
+
+        if args.enable_port_stats and file_overrides.get("ixia_port_pre") and file_overrides.get("ixia_port_post"):
+            progress.stage("TRAFFIC_VERIFIER")
+            try:
+                traffic_verdict = _run_traffic_verifier(
+                    run_id=args.run_id,
+                    pre_path=file_overrides["ixia_port_pre"],
+                    post_path=file_overrides["ixia_port_post"],
+                )
+                file_overrides["traffic_verifier"] = traffic_verdict
+                status["traffic_verifier"] = "ok"
+                progress.info(f"Traffic verifier complete: {traffic_verdict}")
+            except Exception as exc:
+                status["traffic_verifier"] = "failed"
+                status["traffic_verifier_error"] = str(exc)
+                progress.error(f"Traffic verifier failed: {exc}")
+
+        if os.path.exists(os.path.join("artifacts", "campaigns", args.run_id, "rca_ui_report.json")):
+            pass
+
+        progress.stage("INTENT_RCA")
+        intent_rca_status = "ok"
+        try:
+            if telemetry_usable:
+                progress.info("Running intent RCA")
+                run_intent_rca(
+                    run_id=args.run_id,
+                    profile=args.profile,
+                    topology=args.topology,
+                    src=args.src,
+                    dst=args.dst,
+                    intent_name=args.intent_name,
+                )
+                progress.info("Intent RCA complete")
+            else:
+                intent_rca_status = "failed"
+                status["intent_rca_error"] = "skipped because telemetry was not usable"
+                progress.warn("Intent RCA skipped because telemetry was not usable")
+        except Exception as exc:
+            intent_rca_status = "failed"
+            status["intent_rca_error"] = str(exc)
+            print(f"[WARN] intent RCA failed: {exc}")
+            progress.warn(f"Intent RCA failed: {exc}")
+
+        status["intent_rca"] = intent_rca_status
+
+        progress.stage("WRITE_SUMMARY_AND_FINAL_REPORT")
+        summary_path = os.path.join("artifacts", "campaigns", args.run_id, "rca_case_summary.json")
+
+        write_summary(
+            run_id=args.run_id,
+            intent_name=args.intent_name,
+            src=args.src,
+            dst=args.dst,
+            profile=args.profile,
+            nodes=args.nodes,
+            out_path=summary_path,
+            stress_orchestrator_report=args.stress_orchestrator_report,
+            status=status,
+            files_override=file_overrides,
+            intent_rca_status=intent_rca_status,
+            baseline_window=args.baseline_window,
+            running_decay=args.running_decay,
+            settle_gap=args.settle_gap,
+            post_window=args.post_window,
+        )
+
+        progress.info(f"RCA case summary written: {summary_path}")
+
+        final_report = write_final_report(
+            run_id=args.run_id,
+            intent_name=args.intent_name,
+            src=args.src,
+            dst=args.dst,
+            profile=args.profile,
+            nodes=args.nodes,
+            topology_path=args.topology,
+        )
+        progress.info(f"RCA final report written: {final_report}")
+        progress.stage("RUN_RCA_CASE_COMPLETED")
+
+        print("\nRCA CASE COMPLETED")
+        print(f"  Run ID       : {args.run_id}")
+        print(f"  Intent       : {args.intent_name}")
+        print(f"  Summary      : {summary_path}")
+        print(f"  Final Report : {final_report}")
+        return 0
+
+    except Exception as exc:
+        progress.error(f"RUN_RCA_CASE_FATAL: {exc}")
+        progress.stage("RUN_RCA_CASE_FAILED")
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+if __name__ == "__main__":
+    raise SystemExit(main())
