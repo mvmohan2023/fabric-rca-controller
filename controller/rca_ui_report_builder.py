@@ -6,6 +6,45 @@ from controller.ecmp_recovery_view import (
     build_ecmp_recovery_view,
 )
 
+def _normalize_mixed_speed_spec_validation(raw: Dict[str, Any]) -> Dict[str, Any]:
+    raw = raw or {}
+    group_validation = raw.get("group_validation", {}) or {}
+
+    tolerance_pct = _to_float(raw.get("tolerance_pct", 0.0), 0.0)
+    tolerance_fraction = tolerance_pct / 100.0
+
+    def _row(speed_group: str) -> Dict[str, Any]:
+        g = group_validation.get(speed_group, {}) or {}
+        expected = _to_float(g.get("expected_share", 0.0), 0.0)
+        actual = _to_float(g.get("actual_share", 0.0), 0.0)
+
+        min_allowed = max(0.0, expected - tolerance_fraction)
+        max_allowed = min(1.0, expected + tolerance_fraction)
+        deviation_pct_points = (actual - expected) * 100.0
+
+        return {
+            "speed_group": speed_group,
+            "expected_pct": round(expected * 100.0, 1),
+            "actual_pct": round(actual * 100.0, 1),
+            "allowed_min_pct": round(min_allowed * 100.0, 1),
+            "allowed_max_pct": round(max_allowed * 100.0, 1),
+            "allowed_range_text": f"{round(min_allowed * 100.0, 1)}–{round(max_allowed * 100.0, 1)}%",
+            "deviation_pct": round(deviation_pct_points, 1),
+            "in_spec": bool(g.get("in_spec", False)),
+        }
+
+    rows: List[Dict[str, Any]] = []
+    for speed_group in ("400G", "100G"):
+        if speed_group in group_validation:
+            rows.append(_row(speed_group))
+
+    return {
+        "overall_status": raw.get("overall_status"),
+        "tolerance_pct": round(tolerance_pct, 1),
+        "traffic_start_mode": raw.get("traffic_start_mode", "all_at_once"),
+        "rows": rows,
+    }
+
 def build_ixia_port_map(case_summary: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     files = safe_get(case_summary, "files", {}) or {}
 
@@ -1245,20 +1284,30 @@ def build_rca_ui_report(case_summary_path: str) -> Dict[str, Any]:
     summary["ecmp_confidence"] = ecmp_analysis.get("confidence")
     if ecmp_recovery.get("mode") == "per_target":
         ecmp_targets = ecmp_recovery.get("targets", []) or []
+
+        enriched_ecmp_targets = []
+        for t in ecmp_targets:
+            item = dict(t)
+            raw_report = item.get("raw_report", {}) or {}
+            item["mixed_speed_spec_validation_ui"] = _normalize_mixed_speed_spec_validation(
+                raw_report.get("mixed_speed_spec_validation", {})
+            )
+            enriched_ecmp_targets.append(item)
+
         ecmp_recovery_ui = {
             "mode": "per_target",
-            "target_count": ecmp_recovery.get("target_count", len(ecmp_targets)),
-            "targets": ecmp_targets,
+            "target_count": ecmp_recovery.get("target_count", len(enriched_ecmp_targets)),
+            "targets": enriched_ecmp_targets,
             "summary": ecmp_recovery.get(
                 "summary",
                 {
-                    "ok_targets": sum(1 for t in ecmp_targets if t.get("status") == "ok"),
-                    "failed_targets": sum(1 for t in ecmp_targets if t.get("status") == "failed"),
-                    "skipped_targets": sum(1 for t in ecmp_targets if t.get("status") == "skipped"),
+                    "ok_targets": sum(1 for t in enriched_ecmp_targets if t.get("status") == "ok"),
+                    "failed_targets": sum(1 for t in enriched_ecmp_targets if t.get("status") == "failed"),
+                    "skipped_targets": sum(1 for t in enriched_ecmp_targets if t.get("status") == "skipped"),
                 },
             ),
             "config_intent": config_intent,
-        }
+    }
     else:
         ecmp_recovery_ui = {
             "mode": "single_target",
@@ -1268,7 +1317,6 @@ def build_rca_ui_report(case_summary_path: str) -> Dict[str, Any]:
             "recovery_summary": ecmp_recovery.get("recovery_summary", {}) or {},
             "config_intent": config_intent,
         }
-
 
     # Backfill ECMP input/view from telemetry artifacts when needed.
     # Keep legacy ecmp_recovery behavior intact for older working runs.

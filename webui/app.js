@@ -418,27 +418,27 @@ function renderSummary(report) {
     <div class="summary-grid summary-grid-2">
       <div class="summary-item">
         <div class="summary-label">Primary Cause</div>
-        <div class="summary-value">${escapeHtml(primaryCause)}</div>
+        <div class="summary-value big-status">${escapeHtml(primaryCause)}</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">Confidence</div>
-        <div class="summary-value">${escapeHtml(confidenceText)}</div>
+        <div class="summary-value big-status">${escapeHtml(confidenceText)}</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">Severity</div>
-        <div class="summary-value">${escapeHtml(severityText)}</div>
+        <div class="summary-value big-status">${escapeHtml(severityText)}</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">Top Hotspot</div>
-        <div class="summary-value">${escapeHtml(topHotspot)}</div>
+        <div class="summary-value big-status">${escapeHtml(topHotspot)}</div>
       </div>
       <div class="summary-item full-row">
         <div class="summary-label">Recommended Action</div>
-        <div class="summary-value">${escapeHtml(recommendedAction)}</div>
+        <div class="summary-value big-status">${escapeHtml(recommendedAction)}</div>
       </div>
       <div class="summary-item full-row">
         <div class="summary-label">Key Signals</div>
-        <div class="summary-value">
+        <div class="summary-value big-status">
           <ul class="compact-list">${findingsHtml}</ul>
         </div>
       </div>
@@ -576,19 +576,19 @@ function renderHotspotInterpretation(report) {
       <div class="summary-grid summary-grid-2">
         <div class="summary-item">
           <div class="summary-label">Node / Interface / Queue</div>
-          <div class="summary-value">${escapeHtml(safe(top.node))} / <span class="mono-text">${escapeHtml(safe(top.interface))}</span> / q${escapeHtml(safe(top.queue))}</div>
+          <div class="summary-value big-status">${escapeHtml(safe(top.node))} / <span class="mono-text">${escapeHtml(safe(top.interface))}</span> / q${escapeHtml(safe(top.queue))}</div>
         </div>
         <div class="summary-item">
           <div class="summary-label">Forwarding Class</div>
-          <div class="summary-value">${escapeHtml(safe(top.forwarding_class))}</div>
+          <div class="summary-value big-status">${escapeHtml(safe(top.forwarding_class))}</div>
         </div>
         <div class="summary-item">
           <div class="summary-label">Confidence</div>
-          <div class="summary-value">${escapeHtml(formatConfidence(top.classification_confidence))}</div>
+          <div class="summary-value big-status">${escapeHtml(formatConfidence(top.classification_confidence))}</div>
         </div>
         <div class="summary-item">
           <div class="summary-label">Probable Cause</div>
-          <div class="summary-value">${escapeHtml(safe(top.probable_cause))}</div>
+          <div class="summary-value big-status">${escapeHtml(safe(top.probable_cause))}</div>
         </div>
       </div>
     </div>
@@ -803,19 +803,19 @@ function renderEcmpRecovery(view) {
     <div class="summary-grid summary-grid-4">
       <div class="summary-item">
         <div class="summary-label">Analysis Status</div>
-        <div class="summary-value">${escapeHtml(ecmpLabel("analysis_status", summary.analysis_status))}</div>
+        <div class="summary-value big-status">${escapeHtml(ecmpLabel("analysis_status", summary.analysis_status))}</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">Targets</div>
-        <div class="summary-value">${escapeHtml(String(summary.target_count || 0))}</div>
+        <div class="summary-value big-status">${escapeHtml(String(summary.target_count || 0))}</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">Expected</div>
-        <div class="summary-value">${escapeHtml(String(summary.expected_count || 0))}</div>
+        <div class="summary-value big-status">${escapeHtml(String(summary.expected_count || 0))}</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">Defect Candidates</div>
-        <div class="summary-value">${escapeHtml(String(summary.defect_candidate_count || 0))}</div>
+        <div class="summary-value big-status">${escapeHtml(String(summary.defect_candidate_count || 0))}</div>
       </div>
     </div>
   `;
@@ -921,41 +921,41 @@ function showEcmpDetail(index) {
         <div class="summary-grid summary-grid-3">
           <div class="summary-item">
             <div class="summary-label">Target</div>
-            <div class="summary-value mono-text">${escapeHtml(ecmpDisplayTarget(target.target_id))}</td>
+            <div class="summary-value mono-text">${escapeHtml(ecmpDisplayTarget(target.target_id))}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Verdict</div>
-            <div class="summary-value">${ecmpVerdictBadge(target.recovery_verdict)}</div>
+            <div class="summary-value big-status">${ecmpVerdictBadge(target.recovery_verdict)}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Confidence</div>
-            <div class="summary-value">${escapeHtml(safe(target.confidence))}</div>
+            <div class="summary-value big-status">${escapeHtml(safe(target.confidence))}</div>
           </div>
   
           <div class="summary-item">
             <div class="summary-label">Analysis Status</div>
-            <div class="summary-value">${escapeHtml(ecmpLabel("analysis_status", target.analysis_status))}</div>
+            <div class="summary-value big-status">${escapeHtml(ecmpLabel("analysis_status", target.analysis_status))}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Baseline</div>
-            <div class="summary-value">${escapeHtml(ecmpLabel("baseline_state", target.baseline_state))}</div>
+            <div class="summary-value big-status">${escapeHtml(ecmpLabel("baseline_state", target.baseline_state))}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Recovery</div>
-            <div class="summary-value">${escapeHtml(ecmpLabel("recovery_convergence_state", target.recovery_convergence_state))}</div>
+            <div class="summary-value big-status">${escapeHtml(ecmpLabel("recovery_convergence_state", target.recovery_convergence_state))}</div>
           </div>
   
           <div class="summary-item">
             <div class="summary-label">Speed Alignment</div>
-            <div class="summary-value">${escapeHtml(ecmpLabel("speed_alignment_state", target.speed_alignment_state))}</div>
+            <div class="summary-value big-status">${escapeHtml(ecmpLabel("speed_alignment_state", target.speed_alignment_state))}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Dominant Port State</div>
-            <div class="summary-value">${escapeHtml(ecmpLabel("dominant_port_state", target.dominant_port_state))}</div>
+            <div class="summary-value big-status">${escapeHtml(ecmpLabel("dominant_port_state", target.dominant_port_state))}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Delta Outcome</div>
-            <div class="summary-value">${escapeHtml(ecmpLabel("delta_outcome", target.delta_outcome))}</div>
+            <div class="summary-value big-status">${escapeHtml(ecmpLabel("delta_outcome", target.delta_outcome))}</div>
           </div>
   
           <div class="summary-item full-row">
@@ -973,10 +973,11 @@ function showEcmpDetail(index) {
   
           <div class="summary-item full-row">
             <div class="summary-label">Member Pressure Summary</div>
-            <div class="summary-value">${escapeHtml(safe(target.member_pressure_summary))}</div>
+            <div class="summary-value big-status">${escapeHtml(safe(target.member_pressure_summary))}</div>
           </div>
         </div>
       </div>
+      ${renderMixedSpeedSpecValidationFromTarget(target)}
       <div class="evidence-card full-width">
         <h4>Same-Speed Fairness — Baseline</h4>
         ${renderSameSpeedGroupTable(target.baseline_same_speed_group_view || [])}
@@ -985,7 +986,8 @@ function showEcmpDetail(index) {
         <h4>Same-Speed Fairness — Recovery</h4>
         ${renderSameSpeedGroupTable(target.recovery_same_speed_group_view || [])}
       </div>
-      ${renderSameSpeedGroupMembers(target.recovery_same_speed_group_view || [])} 
+      ${renderSameSpeedGroupMembers(target.baseline_same_speed_group_view || [], "Baseline")}
+      ${renderSameSpeedGroupMembers(target.recovery_same_speed_group_view || [], "Recovery")}
       <div class="evidence-card full-width">
         <h4>Reason Codes</h4>
         ${
@@ -1174,34 +1176,38 @@ function renderSameSpeedGroupTable(groups) {
   `;
 }
 
-function renderSameSpeedGroupMembers(groups) {
-  if (!groups || !groups.length) return "";
+function renderSameSpeedGroupMembers(groups, phaseLabel = "") {
+  if (!Array.isArray(groups) || !groups.length) return "";
 
-  return groups.map(g => `
-    <div class="evidence-card full-width">
-      <h4>Members — ${escapeHtml(g.speed_label || "unknown")}</h4>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Member</th>
-            <th>Share</th>
-            <th>Deviation from Equal Share</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${(g.members || []).map(m => `
+  return groups.map((group) => {
+    const members = Array.isArray(group.members) ? group.members : [];
+    if (!members.length) return "";
+
+    return `
+      <div class="evidence-card full-width">
+        <h4>Members — ${escapeHtml(group.speed_group || "-")}${phaseLabel ? ` (${escapeHtml(phaseLabel)})` : ""}</h4>
+        <table class="data-table compact-table">
+          <thead>
             <tr>
-              <td class="mono-text">${escapeHtml(String(m.member || ""))}</td>
-              <td>${escapeHtml(formatPct(m.share))}</td>
-              <td>${escapeHtml(formatPct(m.deviation_from_equal_share))}</td>
+              <th>Member</th>
+              <th>Share</th>
+              <th>Deviation from Equal Share</th>
             </tr>
-          `).join("")}
-        </tbody>
-      </table>
-    </div>
-  `).join("");
+          </thead>
+          <tbody>
+            ${members.map((member) => `
+              <tr>
+                <td>${escapeHtml(member.member || member.interface || "-")}</td>
+                <td>${escapeHtml(String(member.share_pct ?? member.share ?? "-"))}%</td>
+                <td>${escapeHtml(String(member.deviation_from_equal_pct ?? member.deviation_from_equal ?? "-"))}%</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }).join("");
 }
-
 
 
 function ecmpVerdictRank(verdict) {
@@ -1882,15 +1888,15 @@ function renderEvidence(report, entityId) {
         <div class="summary-grid summary-grid-3">
           <div class="summary-item">
             <div class="summary-label">Tail Drop Delta (Running)</div>
-            <div class="summary-value">${escapeHtml(formatNumber(deltaRunning["tail-drop-pkts"] || 0))}</div>
+            <div class="summary-value big-status">${escapeHtml(formatNumber(deltaRunning["tail-drop-pkts"] || 0))}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Tail Drop Delta (Post)</div>
-            <div class="summary-value">${escapeHtml(formatNumber(deltaPost["tail-drop-pkts"] || 0))}</div>
+            <div class="summary-value big-status">${escapeHtml(formatNumber(deltaPost["tail-drop-pkts"] || 0))}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Temporal Pattern</div>
-            <div class="summary-value">${escapeHtml(safe(item.temporal_pattern))}</div>
+            <div class="summary-value big-status">${escapeHtml(safe(item.temporal_pattern))}</div>
           </div>
         </div>
       </div>
@@ -2652,41 +2658,41 @@ function renderTrafficExecSummary(report) {
 
       <div class="summary-item">
         <div class="summary-label">Affected Fabric Interfaces</div>
-        <div class="summary-value">${escapeHtml(formatNumber(s.affectedPorts))}</div>
+        <div class="summary-value big-status">${escapeHtml(formatNumber(s.affectedPorts))}</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">Affected Unique RoCE Flows</div>
-        <div class="summary-value">${escapeHtml(formatNumber(rocev2UniqueFlowCount))}</div>
+        <div class="summary-value big-status">${escapeHtml(formatNumber(rocev2UniqueFlowCount))}</div>
       </div>
       <div class="summary-item">
         <div class="summary-label">Affected RoCE Findings</div>
-        <div class="summary-value">${escapeHtml(formatNumber(rocev2TotalFindings))}</div>
+        <div class="summary-value big-status">${escapeHtml(formatNumber(rocev2TotalFindings))}</div>
       </div> 
       <div class="summary-item">
         <div class="summary-label">Max Latency (ns)</div>
-        <div class="summary-value">${escapeHtml(formatNumber(s.maxLatency))}</div>
+        <div class="summary-value big-status">${escapeHtml(formatNumber(s.maxLatency))}</div>
       </div>
 
       <div class="summary-item">
         <div class="summary-label">Live IXIA Stats</div>
-        <div class="summary-value">
+        <div class="summary-value big-status">
           <span class="${liveStateClass}">${escapeHtml(liveStateText)}</span>
         </div>
       </div>
 
       <div class="summary-item">
         <div class="summary-label">Live Source</div>
-        <div class="summary-value">${escapeHtml(liveAvailable ? liveSource : "-")}</div>
+        <div class="summary-value big-status">${escapeHtml(liveAvailable ? liveSource : "-")}</div>
       </div>
 
       <div class="summary-item">
         <div class="summary-label">Live Stats Requested</div>
-        <div class="summary-value">${escapeHtml(liveRequested ? "Yes" : "No")}</div>
+        <div class="summary-value big-status">${escapeHtml(liveRequested ? "Yes" : "No")}</div>
       </div>
 
       <div class="summary-item full-row">
         <div class="summary-label">Most Impacted Fabric Mapping</div>
-        <div class="summary-value">
+        <div class="summary-value big-status">
           ${s.topPort
             ? escapeHtml(`${safe(s.topPort.switch || s.topPort.node)} / ${safe(s.topPort.switch_interface || s.topPort.switch_port || s.topPort.interface)}`)
             : "No impacted fabric interface ranking available"}
@@ -2695,12 +2701,12 @@ function renderTrafficExecSummary(report) {
 
       <div class="summary-item full-row">
         <div class="summary-label">Live Visibility Status</div>
-        <div class="summary-value">${escapeHtml(liveDetailText)}</div>
+        <div class="summary-value big-status">${escapeHtml(liveDetailText)}</div>
       </div>
 
       <div class="summary-item full-row">
         <div class="summary-label">Interpretation</div>
-        <div class="summary-value">${escapeHtml(s.narrative)}</div>
+        <div class="summary-value big-status">${escapeHtml(s.narrative)}</div>
       </div>
     </div>
     <div class="exec-summary-extensions">
@@ -3358,6 +3364,100 @@ function ecmpGroupReasonText(code) {
 
   };
   return map[code] || code;
+}
+
+function renderMixedSpeedSpecValidationFromTarget(target) {
+  const expected = target.expected_group_shares || {};
+  const actual = target.recovery_group_shares || {};
+
+  const speedGroups = Object.keys(expected);
+  if (!speedGroups.length) return "";
+
+  const tolerancePct = 15.0;
+
+  const toPct = (value) => {
+    const num = Number(value || 0);
+    return num <= 1.0 ? num * 100.0 : num;
+  };
+
+  const rows = speedGroups.map((speed) => {
+    const exp = toPct(expected[speed]);
+    const act = toPct(actual[speed]);
+    const min = Math.max(0, exp - tolerancePct);
+    const max = Math.min(100, exp + tolerancePct);
+    const deviation = act - exp;
+    const inSpec = act >= min && act <= max;
+
+    return `
+      <tr>
+        <td>${escapeHtml(speed)}</td>
+        <td>${exp.toFixed(1)}%</td>
+        <td>${act.toFixed(1)}%</td>
+	<td class="range-cell">${min.toFixed(1)}–${max.toFixed(1)}%</td>
+	<td class="${Math.abs(deviation) > 15 ? "deviation-bad" : "deviation-ok"}">
+	  ${deviation > 0 ? "+" : ""}${deviation.toFixed(1)}%
+	</td>
+        <td>${
+          inSpec
+            ? '<span class="verdict-badge verdict-pass">In spec</span>'
+            : '<span class="verdict-badge verdict-fail">Out of spec</span>'}
+        </td>
+      </tr>
+    `;
+  }).join("");
+  const overallOutOfSpec = speedGroups.some((speed) => {
+  const exp = toPct(expected[speed]);
+  const act = toPct(actual[speed]);
+  return act < Math.max(0, exp - tolerancePct) || act > Math.min(100, exp + tolerancePct);
+});
+
+  const specSummaryText = overallOutOfSpec
+    ? "Recovery converged, but mixed-speed distribution remains out of spec relative to expected capacity weighting."
+    : "Recovery converged and mixed-speed distribution is within the configured tolerance band.";
+  
+  return `
+    <div class="evidence-card full-width">
+      <h4>Mixed-Speed ECMP Spec Validation</h4>
+      <div class="spec-validation-wrap">
+        <div class="summary-grid summary-grid-3">
+          <div class="summary-item">
+            <div class="summary-label">Overall Status</div>
+            <div class="summary-value">
+              ${
+                overallOutOfSpec
+                  ? '<span class="verdict-badge verdict-fail">out_of_spec</span>'
+                  : '<span class="verdict-badge verdict-pass">in_spec</span>'
+              }
+            </div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Tolerance</div>
+            <div class="summary-value">±15.0%</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Traffic Start Mode</div>
+            <div class="summary-value">all_at_once</div>
+          </div>
+        </div>
+  
+        <table class="data-table compact-table spec-validation-table">
+          <thead>
+            <tr>
+              <th>Speed Group</th>
+              <th>Expected</th>
+              <th>Actual</th>
+              <th>Allowed Range</th>
+              <th>Deviation</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+  
+        <div class="spec-summary">${escapeHtml(specSummaryText)}</div>
+      </div>
+    </div>
+  `;
 }
 
 function ecmpReasonText(code) {
