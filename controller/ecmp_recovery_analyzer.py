@@ -5,6 +5,70 @@ import os
 import statistics
 from typing import Any, Dict, List, Optional
 
+
+
+
+
+def build_mixed_speed_spec_validation(
+    *,
+    recovery_summary: Dict[str, Any],
+    interface_speeds: Optional[Dict[str, str]] = None,
+    tolerance_pct: float = 15.0,
+    traffic_start_mode: str = "all_at_once",
+) -> Dict[str, Any]:
+    speed_groups = recovery_summary.get("speed_group_summary", {}) or {}
+
+    group_validation: Dict[str, Any] = {}
+    violations: List[Dict[str, Any]] = []
+
+    tolerance_fraction = tolerance_pct / 100.0
+
+    for speed, group in speed_groups.items():
+        actual = _safe_float(group.get("actual_share_total"), 0.0)
+        expected = _safe_float(group.get("expected_share_total"), 0.0)
+
+        min_allowed = max(0.0, expected - tolerance_fraction)
+        max_allowed = min(1.0, expected + tolerance_fraction)
+
+        actual_minus_expected = actual - expected
+        actual_minus_expected_pct_points = actual_minus_expected * 100.0
+        in_spec = min_allowed <= actual <= max_allowed
+
+        entry = {
+            "actual_share": round(actual, 4),
+            "expected_share": round(expected, 4),
+            "min_allowed_share": round(min_allowed, 4),
+            "max_allowed_share": round(max_allowed, 4),
+            "actual_minus_expected": round(actual_minus_expected, 4),
+            "actual_minus_expected_pct_points": round(actual_minus_expected_pct_points, 2),
+            "tolerance_pct": round(tolerance_pct, 2),
+            "in_spec": in_spec,
+        }
+        group_validation[speed] = entry
+
+        if not in_spec:
+            violations.append(
+                {
+                    "speed": speed,
+                    "actual_share": round(actual, 4),
+                    "expected_share": round(expected, 4),
+                    "min_allowed_share": round(min_allowed, 4),
+                    "max_allowed_share": round(max_allowed, 4),
+                    "actual_minus_expected_pct_points": round(actual_minus_expected_pct_points, 2),
+                }
+            )
+
+    overall_status = "in_spec" if not violations else "out_of_spec"
+
+    return {
+        "traffic_start_mode": traffic_start_mode,
+        "tolerance_pct": round(tolerance_pct, 2),
+        "group_validation": group_validation,
+        "violations": violations,
+        "overall_status": overall_status,
+    }
+
+
 def _normalize_iface_name(iface: str) -> str:
     if not iface:
         return ""
@@ -724,6 +788,8 @@ def build_ecmp_recovery_report(
     interface_speeds: Optional[Dict[str, str]] = None,
     q8_taildrop_growth: Optional[float] = None,
     default_interval_seconds: int = 10,
+    traffic_start_mode: str = "all_at_once",
+    ecmp_spec_tolerance_pct: float = 15.0,
 ) -> Dict[str, Any]:
     baseline_window = build_rate_intervals(
         sample_paths=ecmp_pre_sample_paths,
@@ -750,6 +816,13 @@ def build_ecmp_recovery_report(
         q8_taildrop_growth=q8_taildrop_growth,
     )
 
+    mixed_speed_validation = build_mixed_speed_spec_validation(
+        recovery_summary=recovery_summary,
+        interface_speeds=interface_speeds,
+        tolerance_pct=ecmp_spec_tolerance_pct,
+        traffic_start_mode=traffic_start_mode,
+    )
+
     return {
         "run_id": run_id,
         "node": node,
@@ -761,6 +834,7 @@ def build_ecmp_recovery_report(
         "baseline_summary": baseline_summary,
         "recovery_summary": recovery_summary,
         "analysis": classification,
+        "mixed_speed_spec_validation": mixed_speed_validation,
     }
 
 

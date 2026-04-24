@@ -1176,16 +1176,36 @@ function renderSameSpeedGroupTable(groups) {
   `;
 }
 
+
 function renderSameSpeedGroupMembers(groups, phaseLabel = "") {
   if (!Array.isArray(groups) || !groups.length) return "";
+
+  const toPct = (value) => {
+    const num = Number(value || 0);
+    return num <= 1.0 ? num * 100.0 : num;
+  };
 
   return groups.map((group) => {
     const members = Array.isArray(group.members) ? group.members : [];
     if (!members.length) return "";
 
+    const speedGroup =
+      group.speed_group ||
+      group.speed ||
+      group.group ||
+      group.name ||
+      "-";
+
+    const expectedPerMember = toPct(
+      group.expected_per_member_share ??
+      group.expected_per_member ??
+      group.expected_member_share ??
+      0
+    );
+
     return `
       <div class="evidence-card full-width">
-        <h4>Members — ${escapeHtml(group.speed_group || "-")}${phaseLabel ? ` (${escapeHtml(phaseLabel)})` : ""}</h4>
+        <h4>Members — ${escapeHtml(String(speedGroup))}${phaseLabel ? ` (${escapeHtml(phaseLabel)})` : ""}</h4>
         <table class="data-table compact-table">
           <thead>
             <tr>
@@ -1195,20 +1215,45 @@ function renderSameSpeedGroupMembers(groups, phaseLabel = "") {
             </tr>
           </thead>
           <tbody>
-            ${members.map((member) => `
-              <tr>
-                <td>${escapeHtml(member.member || member.interface || "-")}</td>
-                <td>${escapeHtml(String(member.share_pct ?? member.share ?? "-"))}%</td>
-                <td>${escapeHtml(String(member.deviation_from_equal_pct ?? member.deviation_from_equal ?? "-"))}%</td>
-              </tr>
-            `).join("")}
+            ${members.map((member) => {
+              const memberName =
+                member.member ||
+                member.interface ||
+                member.name ||
+                "-";
+
+              const share = toPct(
+                member.share ??
+                member.share_pct ??
+                member.member_share ??
+                member.actual_share ??
+                0
+              );
+
+              let deviation = member.deviation_from_equal_pct;
+              if (deviation === undefined || deviation === null || deviation === "") {
+                deviation = member.deviation_from_equal;
+              }
+
+              const deviationPct =
+                deviation !== undefined && deviation !== null && deviation !== ""
+                  ? toPct(deviation)
+                  : Math.abs(share - expectedPerMember);
+
+              return `
+                <tr>
+                  <td>${escapeHtml(String(memberName))}</td>
+                  <td>${share.toFixed(1)}%</td>
+                  <td>${deviationPct.toFixed(1)}%</td>
+                </tr>
+              `;
+            }).join("")}
           </tbody>
         </table>
       </div>
     `;
   }).join("");
 }
-
 
 function ecmpVerdictRank(verdict) {
   const ranks = {

@@ -529,6 +529,51 @@ def telemetry_anomaly_json_path(run_id: str, profile: str) -> str:
         "artifacts", "campaigns", run_id, "telemetry", f"anomaly_{profile}.json"
     )
 
+def _start_ixia_traffic(
+    *,
+    ixia: IxiaClient,
+    sid: int,
+    traffic_start_mode: str,
+    traffic_start_interval_ms: int,
+    progress: ProgressLogger,
+) -> None:
+    interval_seconds = max(0.0, float(traffic_start_interval_ms) / 1000.0)
+
+    if traffic_start_mode != "flow_by_flow":
+        progress.info("Starting IXIA traffic all at once")
+        ixia.traffic_start(session_id=sid)
+        return
+
+    progress.info(
+        f"Starting IXIA traffic in flow_by_flow mode "
+        f"(interval_ms={traffic_start_interval_ms})"
+    )
+
+    traffic_items = ixia.get_traffic_items(sid) or []
+    progress.info(f"IXIA traffic item count before generate: {len(traffic_items)}")
+    progress.info(f"IXIA traffic items before generate: {[x.get('name') for x in traffic_items]}")
+
+    if not traffic_items:
+        progress.info("No IXIA traffic items found; generating traffic")
+        ixia.traffic_generate(session_id=sid)
+        ixia.traffic_apply(session_id=sid)
+        time.sleep(2)
+
+        traffic_items = ixia.get_traffic_items(sid) or []
+        progress.info(f"IXIA traffic item count after generate: {len(traffic_items)}")
+        progress.info(f"IXIA traffic items after generate: {[x.get('name') for x in traffic_items]}")
+
+    if not traffic_items:
+        raise RuntimeError(
+            "flow_by_flow requested, but IXIA session has no traffic items even after traffic_generate/apply"
+        )
+
+    seq_results = ixia.start_traffic_items_sequential(
+        session_id=sid,
+        interval_seconds=interval_seconds,
+    )
+    progress.info(f"Sequential IXIA start results: {seq_results}")
+
 
 def traffic_dir(run_id: str) -> str:
     return os.path.join("artifacts", "campaigns", run_id, "traffic")
@@ -1659,6 +1704,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--interface",
         help="Bounced interface for single-interface ECMP recovery analysis.",
+    )
+
+    parser.add_argument("--traffic-start-mode", default="all_at_once",
+                    choices=["all_at_once", "flow_by_flow", "batch"])
+    parser.add_argument("--ecmp-spec-tolerance-pct", type=float, default=15.0)
+    parser.add_argument(
+        "--traffic-start-interval-ms",
+        type=int,
+        default=100,
+        help="Delay between flow starts (flow-by-flow mode)",
     )
 
     args = parser.parse_args()
@@ -3044,6 +3099,7 @@ def main() -> int:
 
     try:
         progress.stage("IXIA_SESSION_INIT")
+        interval_seconds = args.traffic_start_interval_ms / 1000.0
         inv = load_json_file(args.ixia_inventory)
         api_server = inv.get("ixnetwork_api_server")
         if not api_server:
@@ -3068,8 +3124,13 @@ def main() -> int:
         progress.stage("PREPARE_PRE_STAGE")
         progress.info("Starting traffic for BASELINE (PRE) stage")
         print("\n[IXIA] starting traffic for BASELINE snapshot ...")
-        ixia.start_traffic(sid)
-
+        _start_ixia_traffic(
+            ixia=ixia,
+            sid=sid,
+            traffic_start_mode=args.traffic_start_mode,
+            traffic_start_interval_ms=args.traffic_start_interval_ms,
+            progress=progress,
+        )
         progress.info(
             f"Collecting true pre-window samples over baseline_window={args.baseline_window}s"
         )
@@ -3260,7 +3321,13 @@ def main() -> int:
         progress.stage("RESTART_TRAFFIC_FOR_POST_WINDOW")
         progress.info("Restarting traffic for POST recovery window")
         print("\n[IXIA] starting traffic for POST recovery window ...")
-        ixia.start_traffic(sid)
+        _start_ixia_traffic(
+            ixia=ixia,
+            sid=sid,
+            traffic_start_mode=args.traffic_start_mode,
+            traffic_start_interval_ms=args.traffic_start_interval_ms,
+            progress=progress,
+        )
 
         sample_count = 3
         recovery_sample_names = ["recover_1", "recover_2", "post"]
@@ -3408,7 +3475,13 @@ def main() -> int:
             progress.stage("RESUME_TRAFFIC_AFTER_POST")
             progress.info("Resuming traffic after POST recovery series")
             print("\n[IXIA] resuming traffic after POST recovery series ...")
-            ixia.start_traffic(sid)
+            _start_ixia_traffic(
+                ixia=ixia,
+                sid=sid,
+                traffic_start_mode=args.traffic_start_mode,
+                traffic_start_interval_ms=args.traffic_start_interval_ms,
+                progress=progress,
+            )
             progress.info("Traffic resumed after POST recovery series")
 
         telemetry_usable = any(
@@ -3720,6 +3793,8 @@ def main() -> int:
                             interface_speeds=interface_speeds,
                             q8_taildrop_growth=q8_taildrop_growth,
                             default_interval_seconds=max(1, int(args.post_sample_interval or 10)),
+                            traffic_start_mode=args.traffic_start_mode,
+                            ecmp_spec_tolerance_pct=args.ecmp_spec_tolerance_pct,
                         )
 
                         per_target_reports.append(

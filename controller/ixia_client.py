@@ -224,6 +224,54 @@ class IxiaClient:
     # ------------------------------------------------------------
     # Href helpers
     # ------------------------------------------------------------
+
+    def start_traffic_items_sequential(
+        self,
+        session_id: Optional[int] = None,
+        interval_seconds: float = 0.1,
+    ) -> List[Dict[str, Any]]:
+        """
+        Start traffic items one-by-one with delay (flow-by-flow behavior).
+        """
+        sid = self.resolve_session_id(session_id)
+        root = self.session_root(sid)
+
+        traffic_items = self.get_traffic_items(sid)
+        print(f"IXIA traffic item count: {len(traffic_items)}")
+        print(f"IXIA traffic items: {[item.get('name') for item in traffic_items]}")
+        results = []
+
+        for item in traffic_items:
+            href = self.get_href(item)
+            if not href:
+                continue
+
+            try:
+                # Enable this traffic item
+                self.patch(href, {"enabled": True})
+
+                # Apply changes
+                self.apply_traffic(sid)
+
+                # Start traffic (this will include enabled items)
+                result = self.start_traffic(sid)
+
+                results.append({
+                    "traffic_item": item.get("name"),
+                    "status": "started",
+                    "started_epoch": time.time(),
+                })
+
+                time.sleep(interval_seconds)
+
+            except Exception as exc:
+                results.append({
+                    "traffic_item": item.get("name"),
+                    "status": "failed",
+                    "error": str(exc),
+                })
+
+        return results
     def get_href(self, obj: Dict[str, Any]) -> Optional[str]:
         if obj.get("href"):
             return obj["href"]

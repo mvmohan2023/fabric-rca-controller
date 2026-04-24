@@ -3484,6 +3484,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-case-id", default="", help="Logical test case / event ID")
     parser.add_argument("--suite-name", default="", help="Optional human readable suite name")
 
+    parser.add_argument("--traffic-start-mode", default="all_at_once",
+                    choices=["all_at_once", "flow_by_flow", "batch"])
+    parser.add_argument("--ecmp-spec-tolerance-pct", type=float, default=15.0)
+
     args = parser.parse_args()
     normalize_phase_timing_args(args)
 
