@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any
 import paramiko
+from controller.utils import atomic_write_json
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -177,8 +178,9 @@ def render_text(report: Dict[str, Any]) -> str:
 
 def write_outputs(run_id: str, report: Dict[str, Any]) -> str:
     paths = output_paths(run_id=run_id, node=report["node"], interface_name=report["interface"])
-    with open(paths["json"], "w") as f:
-        json.dump(report, f, indent=2)
+    #with open(paths["json"], "w") as f:
+    #    json.dump(report, f, indent=2)
+    atomic_write_json(paths["json"], report, indent=2)
     with open(paths["txt"], "w") as f:
         f.write(render_text(report))
     return paths["json"]

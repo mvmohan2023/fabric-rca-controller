@@ -15,12 +15,248 @@ from controller.ecmp_recovery_analyzer import (
     write_ecmp_recovery_report,
 )
 from controller.telemetry_monitor import collect_recovery_snapshot
+from controller.utils import atomic_write_json
 DEFAULT_PROFILE = "hotspot_congestion_qmon"
 DEFAULT_TOPOLOGY = "artifacts/topology/topology_full.json"
 DEFAULT_IXIA_INVENTORY = os.path.join("controller", "ixia_inventory.json")
 
+def _parse_ecmp_analysis_targets(value):
+    result = []
+    for item in str(value or "").split(","):
+        item = item.strip()
+        if not item or ":" not in item:
+            continue
+        node, iface = item.split(":", 1)
+        result.append({
+            "node": node.strip(),
+            "interface": iface.strip().replace("~", ":"),
+        })
+    return result
 
 
+def _extract_orchestrator_degraded_sample_paths(stress_report_path):
+    if not stress_report_path or not os.path.exists(stress_report_path):
+        return {}
+
+    with open(stress_report_path, "r", encoding="utf-8") as fh:
+        report = json.load(fh)
+
+    paths = {}
+
+    def add_variants(node, iface, sample_paths):
+        iface_colon = str(iface).replace("~", ":")
+        iface_tilde = str(iface).replace(":", "~")
+
+        for key in (
+            f"{node}|{iface_colon}",
+            f"{node}:{iface_colon}",
+            f"{node}|{iface_tilde}",
+            f"{node}:{iface_tilde}",
+        ):
+            paths[key] = sample_paths
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            if obj.get("stress_mode") == "interface_hold_restore":
+                target = obj.get("target") or {}
+                node = target.get("node")
+                iface = target.get("interface")
+                sample_paths = obj.get("ecmp_degraded_sample_paths") or []
+
+                if node and iface and sample_paths:
+                    add_variants(node, iface, sample_paths)
+
+            for v in obj.values():
+                walk(v)
+
+        elif isinstance(obj, list):
+            for x in obj:
+                walk(x)
+
+    walk(report)
+    return paths
+
+def _extract_degraded_hold_windows(stress_report_path):
+    if not stress_report_path or not os.path.exists(stress_report_path):
+        return {}
+
+    with open(stress_report_path, "r", encoding="utf-8") as fh:
+        report = json.load(fh)
+
+    windows = {}
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            if obj.get("stress_mode") == "interface_hold_restore":
+                target = obj.get("target") or {}
+                node = target.get("node")
+                iface = target.get("interface")
+                ts = obj.get("phase_timestamps") or {}
+                if node and iface and ts:
+                    windows[f"{node}|{iface}"] = ts
+                    windows[f"{node}:{iface}"] = ts
+                    windows[f"{node}|{str(iface).replace(':', '~')}"] = ts
+                    windows[f"{node}:{str(iface).replace(':', '~')}"] = ts
+
+            for v in obj.values():
+                walk(v)
+
+        elif isinstance(obj, list):
+            for x in obj:
+                walk(x)
+
+    walk(report)
+    return windows
+
+
+
+def _parse_ecmp_analysis_targets(raw: str | None) -> list:
+    if not raw:
+        return []
+
+    targets = []
+    for item in str(raw).split(","):
+        item = item.strip()
+        if not item:
+            continue
+
+        if ":" not in item:
+            raise ValueError(
+                f"Invalid --ecmp-analysis-targets item '{item}', expected node:interface"
+            )
+
+        node, interface = item.split(":", 1)
+        node = node.strip()
+        interface = interface.strip()
+
+        if not node or not interface:
+            raise ValueError(
+                f"Invalid --ecmp-analysis-targets item '{item}', expected node:interface"
+            )
+
+        targets.append(
+            {
+                "node": node,
+                "interface": interface,
+                "entity": f"{node}|{interface}",
+                "target_source": "ecmp_analysis_targets_override",
+            }
+        )
+
+    return targets
+
+
+def _resolve_ecmp_interfaces_from_device_facts(node_name: str) -> list:
+    facts_path = Path("artifacts") / "device_facts" / f"{node_name}_facts.json"
+    if not facts_path.exists():
+        return []
+
+    try:
+        facts = load_json(facts_path)
+    except Exception:
+        return []
+
+    interface_speeds = facts.get("interface_speeds", {}) or {}
+    if not isinstance(interface_speeds, dict) or not interface_speeds:
+        return []
+
+    interfaces = []
+    for ifname in sorted(interface_speeds.keys()):
+        # Keep only physical/chassis interfaces used for fabric ECMP.
+        if not str(ifname).startswith(("et-", "xe-", "ge-")):
+            continue
+
+        interfaces.append(
+            {
+                "node": node_name,
+                "interface": ifname,
+            }
+        )
+
+    return interfaces
+
+def _build_ecmp_analysis_targets(
+    *,
+    args,
+    file_overrides: dict,
+    fallback_targets: list,
+) -> list:
+    """
+    Build ECMP analysis targets independently from stress targets.
+
+    Use this when the event target is different from the ECMP decision point.
+    Example:
+      event target    = spine1/spine2 links
+      analysis target = leaf1 ECMP member group
+    """
+    override_node = getattr(args, "ecmp_analysis_node", None)
+    override_interface = getattr(args, "ecmp_analysis_interface", None)
+
+    explicit_targets = _parse_ecmp_analysis_targets(
+        getattr(args, "ecmp_analysis_targets", None)
+    )
+
+    if explicit_targets:
+        return explicit_targets
+
+    if not override_node:
+        return fallback_targets or []
+
+    if override_interface:
+        return [
+            {
+                "node": override_node,
+                "interface": override_interface,
+                "entity": f"{override_node}|{override_interface}",
+                "target_source": "ecmp_analysis_override",
+            }
+        ]
+
+    interfaces = []
+
+    # First try device facts.
+    try:
+        interfaces = _resolve_ecmp_interfaces_from_device_facts(override_node)
+    except Exception:
+        interfaces = []
+
+    # Fallback to topology if device facts are empty.
+    if not interfaces:
+        try:
+            topology = load_json(args.topology)
+            all_targets = extract_fabric_interfaces(topology)
+            interfaces = [
+                t for t in all_targets
+                if str(t.get("node", "")).strip().lower()
+                == str(override_node).strip().lower()
+            ]
+        except Exception:
+            interfaces = []
+
+    if not interfaces:
+        progress = getattr(args, "progress", None)
+        print(f"[ECMP-DEBUG] override_node={override_node} resolved_interfaces={interfaces[:10]}")
+        raise RuntimeError(
+            f"--ecmp-analysis-node {override_node} was provided, "
+            "but no fabric interfaces could be resolved from device facts or topology"
+        )
+
+    targets = []
+    for item in interfaces:
+        node = item.get("node") or override_node
+        interface = item.get("interface")
+        if not interface:
+            continue
+        targets.append(
+            {
+                "node": node,
+                "interface": interface,
+                "entity": f"{node}|{interface}",
+                "target_source": "ecmp_analysis_override",
+            }
+        )
+
+    return targets
 
 def _encode_iface_for_snapshot(iface: str) -> str:
     # '/' -> '_' and ':' -> '~' so sample suffix _1,_2,_3 stays distinct
@@ -72,8 +308,9 @@ def _update_roce_case_summary(
     if ixia_live_monitor_status is not None:
         status["ixia_live_monitor"] = ixia_live_monitor_status
 
-    with open(case_summary_path, "w") as f:
-        json.dump(data, f, indent=2)
+    #with open(case_summary_path, "w") as f:
+    #    json.dump(data, f, indent=2)
+    atomic_write_json(case_summary_path, data, indent=2)
 
 
 def _run_roce_deep_inspection(
@@ -689,8 +926,9 @@ def write_final_report(
     }
 
     out_path = os.path.join("artifacts", "campaigns", run_id, "rca_final_report.json")
-    with open(out_path, "w") as f:
-        json.dump(report, f, indent=2, sort_keys=False)
+    #with open(out_path, "w") as f:
+    #    json.dump(report, f, indent=2, sort_keys=False)
+    atomic_write_json(out_path, report, indent=2, sort_keys=False)
 
     return out_path
 
@@ -754,8 +992,9 @@ def write_summary(
         "pre_event_cleanliness": (files_override or {}).get("pre_event_cleanliness"),
     }
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(data, f, indent=2, sort_keys=False)
+    #with open(out_path, "w") as f:
+    #    json.dump(data, f, indent=2, sort_keys=False)
+    atomic_write_json(out_path, data, indent=2, sort_keys=False)
 
 
 
@@ -1270,10 +1509,13 @@ def _run_roce_stats(
     )
 
     out = output_paths("campaign", run_id, snapshot_name)
-    with open(out["json"], "w") as f:
-        json.dump(report, f, indent=2)
+    #with open(out["json"], "w") as f:
+    #    json.dump(report, f, indent=2)
+    atomic_write_json(out["json"], report, indent=2)
+
     with open(out["txt"], "w") as f:
         f.write(build_text_report(report))
+
 
     return out["json"]
 
@@ -1345,8 +1587,9 @@ def _run_roce_hotspot(*, run_id: str, deep_path: str) -> str:
     report = build_hotspot_report(deep)
     json_path, txt_path = output_paths("campaign", run_id)
     os.makedirs(os.path.dirname(json_path), exist_ok=True)
-    with open(json_path, "w") as f:
-        json.dump(report, f, indent=2)
+    #with open(json_path, "w") as f:
+    #    json.dump(report, f, indent=2)
+    atomic_write_json(json_path, report, indent=2)
     with open(txt_path, "w") as f:
         f.write(render_text(report, run_id))
     return json_path
@@ -1458,8 +1701,9 @@ def _run_ixia_live_monitor(
         report["live_error"] = "RoCE live statistics returned no usable rows"
 
     out = output_paths("campaign", run_id, "live")
-    with open(out["json"], "w") as f:
-        json.dump(report, f, indent=2)
+    #with open(out["json"], "w") as f:
+    #    json.dump(report, f, indent=2)
+    atomic_write_json(out["json"], report, indent=2)
     with open(out["txt"], "w") as f:
         f.write(render_text(report))
 
@@ -1528,8 +1772,9 @@ def _run_ixia_port_stats(
             }
 
             out = snapshot_paths("campaign", run_id, snapshot_name)
-            with open(out["json"], "w") as f:
-                json.dump(report, f, indent=2)
+            #with open(out["json"], "w") as f:
+            #    json.dump(report, f, indent=2)
+            atomic_write_json(out["json"], report, indent=2)
             with open(out["txt"], "w") as f:
                 f.write(render_text_report(report))
 
@@ -1714,6 +1959,28 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=100,
         help="Delay between flow starts (flow-by-flow mode)",
+    )
+
+    parser.add_argument(
+        "--ecmp-analysis-node",
+        default=None,
+        help="Optional node to use for ECMP recovery analysis. Useful when stress target is not the ECMP decision node.",
+    )
+
+    parser.add_argument(
+        "--ecmp-analysis-interface",
+        default=None,
+        help="Optional interface to use for ECMP recovery analysis when overriding the stress target.",
+    )
+
+    parser.add_argument(
+        "--ecmp-analysis-targets",
+        default=None,
+        help=(
+            "Comma-separated ECMP analysis targets, e.g. "
+            "leaf1:et-0/0/11:0,leaf1:et-0/0/40:0. "
+            "Use when stress target differs from ECMP decision node."
+        ),
     )
 
     args = parser.parse_args()
@@ -2954,8 +3221,9 @@ def inject_phase_delta_into_ui_report(
     # keep nested dict attached explicitly
     ui_report["cos_health"] = ui_report.get("cos_health", {}) or {}
 
-    with open(ui_report_path, "w", encoding="utf-8") as f:
-        json.dump(ui_report, f, indent=2)
+    #with open(ui_report_path, "w", encoding="utf-8") as f:
+    #    json.dump(ui_report, f, indent=2)
+    atomic_write_json(ui_report_path, ui_report, indent=2)
 
 def main() -> int:
     args = parse_args()
@@ -3094,6 +3362,7 @@ def main() -> int:
         "cos_hotspot_correlation": "skipped",
         "ecmp_pre_sampling": "skipped",
         "ecmp_recovery_sampling": "skipped",
+        "ecmp_degraded_sampling": "skipped",
     }
     file_overrides = {}
 
@@ -3147,8 +3416,27 @@ def main() -> int:
         file_overrides["pre_sample_paths"] = pre_sample_paths
         progress.info(f"pre_sample_paths={pre_sample_paths}")
 
-        ecmp_targets = file_overrides.get("ecmp_targets") or _extract_targets_from_orchestrator_report(
+
+        stress_ecmp_targets = file_overrides.get("ecmp_targets") or _extract_targets_from_orchestrator_report(
             args.stress_orchestrator_report
+        )
+
+        ecmp_targets = _build_ecmp_analysis_targets(
+            args=args,
+            file_overrides=file_overrides,
+            fallback_targets=stress_ecmp_targets,
+        )
+
+        file_overrides["stress_ecmp_targets"] = stress_ecmp_targets
+        file_overrides["ecmp_targets"] = ecmp_targets
+        target_names = [
+            f"{t.get('node')}|{t.get('interface')}"
+            for t in ecmp_targets
+        ]
+        progress.info(
+            f"[ECMP-ANALYSIS-TARGETS] "
+            f"override_node={getattr(args, 'ecmp_analysis_node', None)} "
+            f"targets={target_names}"
         )
         if ecmp_targets:
             progress.stage("ECMP_PRE_BASELINE_SAMPLING")
@@ -3345,12 +3633,90 @@ def main() -> int:
         file_overrides["post_sample_paths"] = post_sample_paths
         file_overrides["post_sample_names"] = recovery_sample_names
 
-        ecmp_targets = file_overrides.get("ecmp_targets") or _extract_bounced_targets_from_events(
-            file_overrides.get("events", []) or []
+
+        fallback_targets = file_overrides.get("stress_ecmp_targets") or []
+
+        if not fallback_targets:
+            fallback_targets = [
+                {
+                    "node": r.get("target", {}).get("node"),
+                    "interface": str(r.get("target", {}).get("interface") or "").replace("~", ":"),
+                }
+                for item in (stress_report.get("iteration_results") or [])
+                for r in ((item.get("stress_action") or {}).get("results") or [])
+                if r.get("target", {}).get("node") and r.get("target", {}).get("interface")
+            ]
+        ecmp_targets = _build_ecmp_analysis_targets(
+            args=args,
+            file_overrides=file_overrides,
+            fallback_targets=fallback_targets,
         )
 
+        file_overrides["ecmp_targets"] = ecmp_targets
+
+        target_names = [
+            f"{t.get('node')}|{t.get('interface')}"
+            for t in ecmp_targets
+        ]
+        progress.info(
+            f"[ECMP-ANALYSIS-TARGETS] "
+            f"override_node={getattr(args, 'ecmp_analysis_node', None)} "
+            f"targets={target_names}"
+        ) 
+
         if ecmp_targets:
+            progress.stage("ECMP_DEGRADED_HOLD_SAMPLING")
+
+            try:
+                ecmp_degraded_sample_paths_by_target = {}
+
+                for target in ecmp_targets:
+                    target_node = target["node"]
+                    target_interface = target["interface"]
+
+                    target_paths = _collect_targeted_recovery_series(
+                        snapshot_prefix=(
+                            f"ecmp_degraded_{target_node}_"
+                            f"{_encode_iface_for_snapshot(target_interface)}"
+                        ),
+                        total_window=max(
+                            1,
+                            int(getattr(args, "degraded_hold_seconds", 60))
+                        ),
+                        sample_count=max(
+                            1,
+                            int(getattr(args, "degraded_ecmp_sample_count", 3))
+                        ),
+                        bounced_node=target_node,
+                        bounced_interface=target_interface,
+                    )
+
+                    ecmp_degraded_sample_paths_by_target[
+                        target["entity"]
+                    ] = target_paths
+
+                    progress.info(
+                        f"ECMP degraded sample paths for "
+                        f"{target['entity']}: {target_paths}"
+                    )
+
+                file_overrides[
+                    "ecmp_degraded_sample_paths_by_target"
+                ] = ecmp_degraded_sample_paths_by_target
+
+                status["ecmp_degraded_sampling"] = "ok"
+
+            except Exception as exc:
+                status["ecmp_degraded_sampling"] = "failed"
+                status["ecmp_degraded_sampling_error"] = str(exc)
+
+                progress.warn(
+                    f"ECMP degraded sampling failed: {exc}"
+                )
+
+            # legacy
             progress.stage("ECMP_POST_RECOVERY_SAMPLING")
+
             try:
                 ecmp_recovery_sample_paths_by_target = {}
 
@@ -3697,6 +4063,7 @@ def main() -> int:
         status["intent_rca"] = intent_rca_status
         if (
             file_overrides.get("ecmp_pre_sample_paths_by_target")
+            and file_overrides.get("ecmp_degraded_sample_paths_by_target")
             and file_overrides.get("ecmp_recovery_sample_paths_by_target")
         ):
             progress.stage("ECMP_RECOVERY_ANALYSIS")
@@ -3710,16 +4077,53 @@ def main() -> int:
 
                 ecmp_targets = file_overrides.get("ecmp_targets", []) or []
                 per_target_reports = []
+                degraded_hold_windows = _extract_degraded_hold_windows(
+                    args.stress_orchestrator_report
+                )
+                orchestrator_degraded_paths = _extract_orchestrator_degraded_sample_paths(
+                    args.stress_orchestrator_report
+                )
+                degraded_event_sample_paths = sorted(set(
+                    path
+                    for paths in (orchestrator_degraded_paths or {}).values()
+                    for path in (paths or [])
+                ))
 
+                degraded_event_hold_window = {}
+                for window in (degraded_hold_windows or {}).values():
+                    if window:
+                        degraded_event_hold_window = window
+                        break
+
+                cli_ecmp_targets = _parse_ecmp_analysis_targets(args.ecmp_analysis_targets)
                 for target in ecmp_targets:
                     target_entity = target["entity"]
                     target_node = target["node"]
                     target_interface = target["interface"]
-
+                    
+                    degraded_hold_window = degraded_event_hold_window
                     target_pre_paths = file_overrides["ecmp_pre_sample_paths_by_target"].get(target_entity, [])
+
+                    target_degraded_paths = degraded_event_sample_paths
+
                     target_recovery_paths = file_overrides["ecmp_recovery_sample_paths_by_target"].get(target_entity, [])
 
-                    if not target_pre_paths or not target_recovery_paths:
+                    stress_targets_for_node = [
+                        x for x in (file_overrides.get("stress_ecmp_targets") or [])
+                        if str(x.get("node", "")).lower() == str(target_node).lower()
+                    ]
+
+                    degraded_disabled_interfaces = sorted(set(
+                        str(r.get("target", {}).get("interface") or "").replace("~", ":")
+                        for item in (stress_report.get("iteration_results") or [])
+                        for r in ((item.get("stress_action") or {}).get("results") or [])
+                        if (r.get("target") or {}).get("interface")
+                    ))
+
+                    if (
+                        not target_pre_paths
+                        or not target_recovery_paths
+                    ):
                         per_target_reports.append(
                             {
                                 "entity": target_entity,
@@ -3782,6 +4186,33 @@ def main() -> int:
 
                     q8_taildrop_growth = None
 
+
+                    analysis_interfaces_of_interest = sorted(set(
+                        t["interface"]
+                        for t in cli_ecmp_targets
+                        if str(t["node"]).lower() == str(target_node).lower()
+                    ))
+
+                    if not analysis_interfaces_of_interest:
+                        analysis_interfaces_of_interest = sorted(set(
+                            str(t.get("interface") or "").replace("~", ":")
+                            for t in (file_overrides.get("ecmp_targets") or [])
+                            if str(t.get("node", "")).lower() == str(target_node).lower()
+                            and t.get("interface")
+                        ))
+
+                    if not analysis_interfaces_of_interest:
+                        analysis_interfaces_of_interest = interfaces_of_interest
+                   
+                    expected_min_ecmp_members = 3
+
+                    if len(analysis_interfaces_of_interest) < expected_min_ecmp_members:
+                        raise RuntimeError(
+                            f"ECMP analysis interface set too small: "
+                            f"target={target_entity}, interfaces={analysis_interfaces_of_interest}"
+                        )
+
+                    print("[ECMP-ANALYSIS-INTERFACES]", target_entity, len(analysis_interfaces_of_interest), analysis_interfaces_of_interest)
                     try:
                         ecmp_report = build_ecmp_recovery_report(
                             run_id=args.run_id,
@@ -3789,7 +4220,10 @@ def main() -> int:
                             bounced_interface=target_interface,
                             ecmp_pre_sample_paths=target_pre_paths,
                             ecmp_recovery_sample_paths=target_recovery_paths,
-                            interfaces_of_interest=interfaces_of_interest,
+                            ecmp_degraded_sample_paths=target_degraded_paths,
+                            ecmp_degraded_disabled_interfaces=degraded_disabled_interfaces,
+                            ecmp_degraded_hold_window=degraded_hold_window,
+                            interfaces_of_interest=analysis_interfaces_of_interest,
                             interface_speeds=interface_speeds,
                             q8_taildrop_growth=q8_taildrop_growth,
                             default_interval_seconds=max(1, int(args.post_sample_interval or 10)),
@@ -3805,6 +4239,7 @@ def main() -> int:
                                 "status": "ok",
                                 "analysis": ecmp_report.get("analysis", {}),
                                 "baseline_summary": ecmp_report.get("baseline_summary", {}),
+                                "degraded_summary": ecmp_report.get("degraded_summary", {}),
                                 "recovery_summary": ecmp_report.get("recovery_summary", {}),
                                 "raw_report": ecmp_report,
                             }

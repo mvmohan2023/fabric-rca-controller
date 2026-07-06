@@ -5,6 +5,94 @@ from controller.ecmp_recovery_view import (
     build_ecmp_recovery_input_from_existing_artifacts,
     build_ecmp_recovery_view,
 )
+from controller.utils import atomic_write_json
+from controller.engineering_reasoning_builder import build_engineering_reasoning
+
+def _recompute_ecmp_summary_from_targets(ecmp_view: Dict[str, Any]) -> None:
+    targets = ecmp_view.get("targets", []) or []
+    summary = ecmp_view.setdefault("summary", {})
+
+    summary["target_count"] = len(targets)
+    summary["expected_count"] = 0
+    summary["acceptable_count"] = 0
+    summary["watch_count"] = 0
+    summary["abnormal_count"] = 0
+    summary["defect_candidate_count"] = 0
+    summary["partial_count"] = 0
+    summary["insufficient_count"] = 0
+
+    for t in targets:
+        verdict = str(t.get("recovery_verdict") or "").lower()
+        status = str(t.get("analysis_status") or "").lower()
+
+        if status == "partial_data":
+            summary["partial_count"] += 1
+        elif status == "insufficient_data":
+            summary["insufficient_count"] += 1
+
+        if verdict in ("no_event_regression", "expected", "acceptable", "design_aligned"):
+            summary["expected_count"] += 1
+        elif verdict in ("watch", "warn"):
+            summary["watch_count"] += 1
+        elif verdict == "abnormal":
+            summary["abnormal_count"] += 1
+        elif verdict == "defect_candidate":
+            summary["defect_candidate_count"] += 1
+        elif not verdict:
+            summary["insufficient_count"] += 1
+
+    if targets and summary["expected_count"] == len(targets):
+        summary["group_reason_codes"] = [
+            "group_equal_score_expected",
+            "group_recovery_stable",
+            "group_no_event_regression",
+            "group_capacity_weight_informational",
+        ]
+        summary["group_summary_text"] = (
+            "ECMP distribution follows equal-score member behavior. "
+            "Recovery converged and no event-induced ECMP regression was detected. "
+            "Capacity-weighted 400G/100G comparison is informational only."
+        )
+
+def _apply_ecmp_expected_mode(item: Dict[str, Any], raw_report: Dict[str, Any]) -> None:
+    # Current LB behavior: all ECMP members use equal score regardless of 400G/100G.
+    expected_mode = raw_report.get("ecmp_expected_mode") or item.get("ecmp_expected_mode") or "equal_member"
+    item["ecmp_expected_mode"] = expected_mode
+
+    mixed = item.get("mixed_speed_spec_validation_ui") or {}
+
+    if expected_mode == "equal_member":
+        mixed["primary"] = False
+        mixed["status"] = "informational"
+        mixed["overall_status"] = "informational"
+        mixed["interpretation"] = (
+            "Capacity-weighted validation is informational because this LB algorithm "
+            "uses equal-score ECMP and does not weight members by link speed."
+        )
+
+        item["speed_alignment"] = "not_applicable"
+        item["speed_alignment_reason"] = "equal_score_ecmp_does_not_capacity_weight_links"
+
+        # Do not classify equal-score expected behavior as defect candidate.
+        if item.get("verdict") == "Defect Candidate":
+            item["verdict"] = "No Event Regression"
+
+
+        reason_codes = item.get("reason_codes") or []
+        reason_codes = [
+            r for r in reason_codes
+            if "mixed-speed" not in str(r).lower()
+            and "capacity" not in str(r).lower()
+            and "misaligned" not in str(r).lower()
+        ]
+        reason_codes.append(
+            "Capacity-weighted mismatch is informational under equal-score ECMP mode"
+        )
+        item["reason_codes"] = reason_codes
+
+    item["mixed_speed_spec_validation_ui"] = mixed
+
+
 
 def _normalize_mixed_speed_spec_validation(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw = raw or {}
@@ -1246,6 +1334,9 @@ def build_rca_ui_report(case_summary_path: str) -> Dict[str, Any]:
     config_intent = load_config_intent(case_summary)
     root_cause = load_optional_artifact(files.get("root_cause_correlation"))
     congestion_inspection = load_optional_artifact(files.get("congestion_inspection"))
+    ecmp_hierarchy_lifecycle = load_optional_artifact(
+        files.get("ecmp_hierarchy_lifecycle")
+    )
 
     stress_classification = build_stress_classification(
         case_summary=case_summary,
@@ -1282,16 +1373,24 @@ def build_rca_ui_report(case_summary_path: str) -> Dict[str, Any]:
     summary["ecmp_classification"] = ecmp_analysis.get("classification")
     summary["ecmp_severity"] = ecmp_analysis.get("severity")
     summary["ecmp_confidence"] = ecmp_analysis.get("confidence")
-    if ecmp_recovery.get("mode") == "per_target":
+    if str(ecmp_recovery.get("mode", "")).startswith("per_target"):
         ecmp_targets = ecmp_recovery.get("targets", []) or []
 
         enriched_ecmp_targets = []
         for t in ecmp_targets:
             item = dict(t)
             raw_report = item.get("raw_report", {}) or {}
+
+            item["degraded_state_balance"] = raw_report.get("degraded_state_balance", "unknown")
+            item["degraded_state_reason"] = raw_report.get("degraded_state_reason", "insufficient_data")
+            item["degraded_summary"] = raw_report.get("degraded_summary", {}) or {}
+            item["degraded_paths"] = raw_report.get("degraded_paths", []) or []
+            item["degraded_survivor_validation"] = raw_report.get("degraded_survivor_validation", {}) or {}
+            item["phase_membership"] = raw_report.get("phase_membership", {}) or {}
             item["mixed_speed_spec_validation_ui"] = _normalize_mixed_speed_spec_validation(
                 raw_report.get("mixed_speed_spec_validation", {})
             )
+            _apply_ecmp_expected_mode(item, raw_report)
             enriched_ecmp_targets.append(item)
 
         ecmp_recovery_ui = {
@@ -1339,8 +1438,188 @@ def build_rca_ui_report(case_summary_path: str) -> Dict[str, Any]:
             case_summary,
             ecmp_view_context,
         )
+
+        # -------------------------------------------------------------------------
+        # Degraded ECMP UI enrichment
+        # Specific to ecmp_member_degraded_hold_restore / per-target degraded flow.
+        # Does not modify legacy ECMP fields.
+        # -------------------------------------------------------------------------
+        if (
+            ecmp_recovery_view
+            and ecmp_recovery_ui
+            and str(ecmp_recovery_ui.get("mode", "")).startswith("per_target")
+        ):
+            degraded_by_target = {}
+
+            def _add_degraded_key_variants(store, node, interface, payload):
+                if not node or not interface:
+                    return
+
+                node = str(node)
+                iface = str(interface)
+                iface_colon = iface.replace("~", ":")
+                iface_tilde = iface.replace(":", "~")
+
+                for key in (
+                    f"{node}|{iface_colon}",
+                    f"{node}:{iface_colon}",
+                    f"{node}|{iface_tilde}",
+                    f"{node}:{iface_tilde}",
+                ):
+                    store[key] = payload
+
+            for t in ecmp_recovery_ui.get("targets", []) or []:
+
+                raw = t.get("raw_report") or {}
+
+                payload = {
+                    "degraded_state_balance": (
+                        t.get("degraded_state_balance")
+                        or raw.get("degraded_state_balance")
+                        or "unknown"
+                    ),
+                    "degraded_state_reason": (
+                        t.get("degraded_state_reason")
+                        or raw.get("degraded_state_reason")
+                        or "insufficient_data"
+                    ),
+                    "degraded_summary": (
+                        t.get("degraded_summary")
+                        or raw.get("degraded_summary")
+                        or {}
+                    ),
+                    "degraded_paths": (
+                        t.get("degraded_paths")
+                        or raw.get("degraded_paths")
+                        or []
+                    ),
+                    "degraded_survivor_validation": (
+                        t.get("degraded_survivor_validation")
+                        or raw.get("degraded_survivor_validation")
+                        or {}
+                    ),
+                    "degraded_sample_window_validation": (
+                        t.get("degraded_sample_window_validation")
+                        or raw.get("degraded_sample_window_validation")
+                        or {}
+                    ),
+                    "phase_membership": (
+                        t.get("phase_membership")
+                        or raw.get("phase_membership")
+                        or {}
+                    ),
+                }
+                # Equal-score ECMP mode: LB does not capacity-weight 400G vs 100G.
+                ecmp_expected_mode = (
+                    raw.get("ecmp_expected_mode")
+                    or t.get("ecmp_expected_mode")
+                    or "equal_member"
+                )
+
+                payload["ecmp_expected_mode"] = ecmp_expected_mode
+
+                if ecmp_expected_mode == "equal_member":
+                    payload["speed_alignment_state"] = "not_applicable"
+                    payload["speed_alignment_reason"] = (
+                        "equal_score_ecmp_does_not_capacity_weight_links"
+                    )
+
+                    payload["recovery_verdict"] = "no_event_regression"
+                    payload["recovery_verdict_reason"] = (
+                        "Equal-score ECMP mode does not capacity-weight 400G/100G links; "
+                        "capacity-weighted mismatch is informational, not event-induced defect."
+                    )
+
+                    capacity_view = payload.get("mixed_speed_spec_validation_ui") or {}
+                    capacity_view["overall_status"] = "informational"
+                    capacity_view["status"] = "informational"
+                    capacity_view["title"] = "Capacity-Weighted View"
+                    capacity_view["primary"] = False
+                    capacity_view["interpretation"] = (
+                        "Informational only: equal-score ECMP mode does not capacity-weight "
+                        "400G/100G members."
+                    )
+
+                    payload["mixed_speed_spec_validation_ui"] = capacity_view
+                    payload["primary_distribution_mode"] = "equal_member"
+                    payload["primary_distribution_title"] = "Equal-Member ECMP Distribution"
+                    payload["capacity_weighted_view_status"] = "informational"
+                    reason_codes = payload.get("reason_codes") or []
+                    reason_codes = [
+                        r for r in reason_codes
+                        if "mixed-speed" not in str(r).lower()
+                        and "capacity" not in str(r).lower()
+                        and "misaligned" not in str(r).lower()
+                    ]
+
+                    reason_codes.append(
+                        "Equal-score ECMP mode: capacity-weighted 400G/100G mismatch is informational"
+                    )
+
+                    if payload.get("degraded_state_balance") == "warn":
+                        reason_codes.append(
+                            "Degraded hold survivor spread exceeded configured tolerance"
+                        )
+
+                    payload["reason_codes"] = reason_codes
+
+                if (
+                    payload["degraded_state_balance"] == "unknown"
+                    and payload["degraded_state_reason"] == "insufficient_data"
+                    and not payload["degraded_summary"]
+                    and not payload["degraded_paths"]
+                ):
+                    continue
+
+                node = t.get("node")
+                interface = t.get("interface")
+
+                if not node or not interface:
+                    entity = t.get("entity") or t.get("target_id")
+                    if entity and "|" in str(entity):
+                        node, interface = str(entity).split("|", 1)
+                    elif entity and ":" in str(entity):
+                        node, interface = str(entity).split(":", 1)
+
+                _add_degraded_key_variants(degraded_by_target, node, interface, payload)
+
+            for vt in ecmp_recovery_view.get("targets", []) or []:
+                target_id = vt.get("target_id") or vt.get("entity")
+                if not target_id:
+                    continue
+
+                node = vt.get("node")
+                interface = vt.get("interface")
+
+                if not node or not interface:
+                    if "|" in str(target_id):
+                        node, interface = str(target_id).split("|", 1)
+                    elif ":" in str(target_id):
+                        node, interface = str(target_id).split(":", 1)
+
+                candidate_keys = []
+                if node and interface:
+                    iface_colon = str(interface).replace("~", ":")
+                    iface_tilde = str(interface).replace(":", "~")
+                    candidate_keys.extend([
+                        f"{node}|{iface_colon}",
+                        f"{node}:{iface_colon}",
+                        f"{node}|{iface_tilde}",
+                        f"{node}:{iface_tilde}",
+                    ])
+
+                candidate_keys.append(str(target_id))
+
+                for key in candidate_keys:
+                    payload = degraded_by_target.get(key)
+                    if payload:
+                        vt.update(payload)
+                        break
     except Exception:
         ecmp_recovery_view = None
+
+    if ecmp_recovery_view:
+        _recompute_ecmp_summary_from_targets(ecmp_recovery_view)
     report = {
         "run_metadata": {
             "generated_at": safe_get(case_summary, "generated_at"),
@@ -1388,6 +1667,7 @@ def build_rca_ui_report(case_summary_path: str) -> Dict[str, Any]:
         "ecmp_recovery": ecmp_recovery_ui,
         "ecmp_recovery_input": ecmp_recovery_input,
         "ecmp_recovery_view": ecmp_recovery_view,
+        "ecmp_hierarchy_lifecycle": ecmp_hierarchy_lifecycle,
     }
 
     return report
@@ -1395,6 +1675,13 @@ def build_rca_ui_report(case_summary_path: str) -> Dict[str, Any]:
 
 def write_rca_ui_report(case_summary_path: str, output_path: str | None = None) -> str:
     report = build_rca_ui_report(case_summary_path)
+    #report["engineering_reasoning"] = build_engineering_reasoning(report)
+    reasoning = build_engineering_reasoning(report)
+
+    if reasoning is report:
+        raise RuntimeError("engineering_reasoning_builder returned original report object")
+
+    report["engineering_reasoning"] = reasoning
 
     if output_path is None:
         case_path = Path(case_summary_path)
@@ -1406,6 +1693,7 @@ def write_rca_ui_report(case_summary_path: str, output_path: str | None = None) 
 
     with out.open("w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
+
 
     return str(out)
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import time
 import random
+from controller.utils import atomic_write_json
 from controller.progress_logger import ProgressLogger
 from controller.run_rca_case import (
     inject_phase_delta_into_ui_report,
@@ -176,6 +177,33 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "network": "Targeted node-group disruption with bounded impact.",
             "telemetry": "Localized congestion or path movement around selected nodes.",
             "rca": "UI should correlate event only to the selected node set.",
+        },
+    },
+    "asymmetric_spine_path_failure": {
+        "stress_mode": "interface_bounce",
+        "description": "Bounce fabric links on one spine-side corridor to validate traffic redistribution and post-recovery rebalance.",
+        "tier": "production_extended",
+        "maturity": "planned",
+        "release_gate": False,
+        "recovery_slo_seconds": 60,
+        "parallel_targets": True,
+        "requires_selected_nodes": True,
+        "selection_policy": {
+            "selection_mode": "selected_nodes",
+            "interface_role": "fabric",
+            "blast_radius": "spine_corridor",
+            "max_targets_per_node": "all",
+            "prefer_healthy": True,
+            "spread_across_nodes": False,
+        },
+        "expected_classifications": [
+            "expected-transient-fabric-reconvergence",
+            "expected-ecn-pressure",
+        ],
+        "expected_behavior": {
+            "network": "Traffic shifts away from the affected spine-side corridor and should rebalance after recovery.",
+            "telemetry": "Temporary congestion may appear on surviving spine paths, but post-recovery distribution should normalize.",
+            "rca": "UI should show whether recovery converged and whether distribution correctness returned after the spine-side path set recovered.",
         },
     },
     # Planned next-stage scenarios
@@ -390,6 +418,35 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "rca": "UI should show a single-node broad fabric interface event with bounded recovery.",
         },
     },
+    "ecmp_member_degraded_hold_restore": {
+        "stress_mode": "interface_hold_restore",
+        "description": "Hold selected ECMP/fabric members down for degraded-state validation, then restore and validate recovery.",
+        "tier": "production_extended",
+        "maturity": "beta",
+        "release_gate": False,
+        "recovery_slo_seconds": 60,
+        "parallel_targets": True,
+        "requires_selected_nodes": False,
+        "selection_policy": {
+            "selection_mode": "manual_or_auto",
+            "interface_role": "fabric",
+            "blast_radius": "bounded_degraded_members",
+            "max_targets_per_node": "all",
+            "prefer_healthy": True,
+            "spread_across_nodes": True,
+        },
+        "expected_classifications": [
+            "expected-degraded-capacity",
+            "expected-ecn-pressure",
+            "unexpected-persistent-dlb-skew",
+            "unexpected-roce-loss-under-degraded-capacity",
+        ],
+        "expected_behavior": {
+            "network": "Selected ECMP members remain down during degraded hold; traffic shifts to surviving members.",
+            "telemetry": "Capacity reduction may increase utilization/ECN, but persistent taildrop or RoCE loss should be flagged.",
+            "rca": "UI should separate degraded-state stability from post-restore recovery.",
+        },
+    },
 }
 SUITES: Dict[str, List[str]] = {
     "smoke": [
@@ -475,6 +532,26 @@ def phase_samples_dir(run_id: str) -> str:
 def phase_samples_path(run_id: str, phase_name: str) -> str:
     return os.path.join(phase_samples_dir(run_id), f"{phase_name}.json")
 
+def _normalize_speed_token(speed: Optional[str]) -> Optional[str]:
+    if not speed:
+        return None
+    s = str(speed).strip().upper().replace(" ", "")
+    s = s.replace("GBPS", "G").replace("MBPS", "M")
+    return s
+
+
+def _filter_targets_by_speed(targets: list[dict], speed: Optional[str]) -> list[dict]:
+    wanted = _normalize_speed_token(speed)
+    if not wanted:
+        return targets
+
+    out = []
+    for t in targets:
+        ts = _normalize_speed_token(t.get("speed") or t.get("link_speed"))
+        if ts == wanted:
+            out.append(t)
+    return out
+
 
 def inject_ecmp_recovery_view_into_ui_report(
     *,
@@ -495,6 +572,70 @@ def inject_ecmp_recovery_view_into_ui_report(
         case_summary=case_summary,
         ui_report=ui_report,
     )
+
+    # Preserve degraded ECMP fields from rca_ui_report["ecmp_recovery"]
+    # after rebuilding ecmp_recovery_view.
+    ecmp_recovery = ui_report.get("ecmp_recovery") or {}
+    ecmp_view = ui_report.get("ecmp_recovery_view") or {}
+
+    degraded_by_key = {}
+
+    for t in ecmp_recovery.get("targets", []) or []:
+        raw = t.get("raw_report") or {}
+        payload = {
+            "degraded_state_balance": t.get("degraded_state_balance") or raw.get("degraded_state_balance"),
+            "degraded_state_reason": t.get("degraded_state_reason") or raw.get("degraded_state_reason"),
+            "degraded_summary": t.get("degraded_summary") or raw.get("degraded_summary") or {},
+            "degraded_paths": t.get("degraded_paths") or raw.get("degraded_paths") or [],
+        }
+
+        entity = t.get("entity") or t.get("target_id")
+        node = t.get("node")
+        iface = t.get("interface")
+
+        if entity and "|" in str(entity):
+            node, iface = str(entity).split("|", 1)
+
+        if node and iface:
+            iface_colon = str(iface).replace("~", ":")
+            iface_tilde = str(iface).replace(":", "~")
+
+            for key in (
+                f"{node}|{iface_colon}",
+                f"{node}:{iface_colon}",
+                f"{node}|{iface_tilde}",
+                f"{node}:{iface_tilde}",
+            ):
+                degraded_by_key[key] = payload
+
+    for vt in ecmp_view.get("targets", []) or []:
+        target_id = str(vt.get("target_id") or vt.get("entity") or "")
+        node = vt.get("node")
+        iface = vt.get("interface")
+
+        if not node or not iface:
+            if "|" in target_id:
+                node, iface = target_id.split("|", 1)
+            elif ":" in target_id:
+                node, iface = target_id.split(":", 1)
+
+        candidate_keys = [target_id]
+        if node and iface:
+            iface_colon = str(iface).replace("~", ":")
+            iface_tilde = str(iface).replace(":", "~")
+            candidate_keys.extend([
+                f"{node}|{iface_colon}",
+                f"{node}:{iface_colon}",
+                f"{node}|{iface_tilde}",
+                f"{node}:{iface_tilde}",
+            ])
+
+        for key in candidate_keys:
+            if key in degraded_by_key:
+                vt.update(degraded_by_key[key])
+                break
+
+    ui_report["ecmp_recovery_view"] = ecmp_view
 
     target_debug = None
     for t in (ui_report.get("ecmp_recovery_view", {}) or {}).get("targets", []):
@@ -689,6 +830,10 @@ def sanitize_name(value: str) -> str:
         .replace("-", "_")
         .lower()
     )
+
+def read_json(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 def normalize_phase_timing_args(args: argparse.Namespace) -> None:
     """
@@ -1176,6 +1321,12 @@ def run_stress_event(
     nodes: str,
     timeout: int,
     topology: str,
+    degraded_hold_seconds: int = 0,
+    restore_after_degraded_validation: bool = False,
+    degraded_ecmp_sample_count: int = 3,
+    degraded_ecmp_sample_interval: int = 30,
+    degraded_sample_start_delay: int = 60,
+    degraded_ecmp_analysis_targets=None,
 ) -> str:
     stress_mode = SCENARIOS[scenario_name]["stress_mode"]
 
@@ -1238,6 +1389,27 @@ def run_stress_event(
             cmd.extend(["--targets", targets_arg])
             cmd.extend(["--parallel", str(len(targets))])
 
+    if degraded_hold_seconds > 0:
+        cmd.extend([
+            "--degraded-hold-seconds",
+            str(degraded_hold_seconds),
+        ])
+
+    if restore_after_degraded_validation:
+        cmd.append("--restore-after-degraded-validation")
+
+    if degraded_ecmp_sample_count:
+        cmd.extend(["--degraded-ecmp-sample-count", str(degraded_ecmp_sample_count)])
+
+    if degraded_ecmp_sample_interval:
+        cmd.extend(["--degraded-ecmp-sample-interval", str(degraded_ecmp_sample_interval)])
+
+    if degraded_sample_start_delay:
+        cmd.extend(["--degraded-sample-start-delay", str(degraded_sample_start_delay)])
+
+    if degraded_ecmp_analysis_targets:
+        cmd.extend(["--degraded-ecmp-analysis-targets", str(degraded_ecmp_analysis_targets)])
+
     run_subprocess(cmd, "STRESS_ORCHESTRATOR")
 
     json_out = BASE_DIR / "artifacts" / "orchestrator" / stress_run_id / "stress_orchestrator_report.json"
@@ -1274,6 +1446,9 @@ def run_rca_case(
     post_sample_interval: int,
     node: Optional[str] = None,
     interface: Optional[str] = None,
+    ecmp_analysis_node: Optional[str] = None,
+    ecmp_analysis_interface: Optional[str] = None,
+    ecmp_analysis_targets: Optional[str] = None,
 ) -> str:
     cmd = [
         sys.executable,
@@ -1330,6 +1505,15 @@ def run_rca_case(
 
     if ixia_session_id is not None:
         cmd.extend(["--ixia-session-id", str(ixia_session_id)])
+
+    if ecmp_analysis_node:
+        cmd.extend(["--ecmp-analysis-node", ecmp_analysis_node])
+
+    if ecmp_analysis_interface:
+        cmd.extend(["--ecmp-analysis-interface", ecmp_analysis_interface])
+
+    if ecmp_analysis_targets:
+        cmd.extend(["--ecmp-analysis-targets", ecmp_analysis_targets])
 
     if resume_after_post:
         cmd.append("--resume-after-post")
@@ -2555,6 +2739,18 @@ def run_single_scenario(
     post_sample_interval: int = 30,
     pre_event_stabilize_seconds: int = 10,
     strict_pre_event_gate: bool = False,
+    ecmp_analysis_node: Optional[str] = None,
+    ecmp_analysis_interface: Optional[str] = None,
+    ecmp_analysis_targets: Optional[str] = None,
+    degraded_hold_seconds: int = 0,
+    degraded_sample_count: int = 3,
+    degraded_sample_interval: int = 60,
+    degrade_target_speed: Optional[str] = None,
+    restore_after_degraded_validation: bool = False,
+    degraded_ecmp_sample_count: int = 3,
+    degraded_ecmp_sample_interval: int = 30,
+    degraded_sample_start_delay: int = 60,
+    degraded_ecmp_analysis_targets=None,
 ) -> Dict[str, Any]:
     scenario = SCENARIOS[scenario_name]
 
@@ -2607,6 +2803,13 @@ def run_single_scenario(
         selected_nodes_raw=selected_nodes,
         one_per_node=one_per_node,
     )
+
+    if scenario_name == "ecmp_member_degraded_hold_restore":
+        targets_resolved = _filter_targets_by_speed(targets_resolved, degrade_target_speed)
+        if not targets_resolved:
+            raise RuntimeError(
+                f"no degraded hold targets resolved for speed={degrade_target_speed}"
+            )
 
     target_mode = "explicit" if (node and interface) or targets else "auto"
     resolved_target_artifacts = write_resolved_targets_artifacts(
@@ -2677,7 +2880,32 @@ def run_single_scenario(
         nodes=nodes,
         timeout=timeout,
         topology=topology,
+        degraded_hold_seconds=degraded_hold_seconds,
+        restore_after_degraded_validation=restore_after_degraded_validation,
+        degraded_ecmp_sample_count=degraded_ecmp_sample_count,
+        degraded_ecmp_sample_interval=degraded_ecmp_sample_interval,
+        degraded_sample_start_delay=degraded_sample_start_delay,
+        degraded_ecmp_analysis_targets=degraded_ecmp_analysis_targets,
     )
+    if scenario_name == "ecmp_member_degraded_hold_restore":
+        degraded_event_artifact = BASE_DIR / "artifacts" / "campaigns" / rca_run_id / "degraded_member_hold_event.json"
+        src_report = read_json(stress_report_path)
+
+        write_json(str(degraded_event_artifact), {
+            "run_id": rca_run_id,
+            "stress_run_id": actual_stress_run_id,
+            "scenario_name": scenario_name,
+            "stress_mode": "interface_hold_restore",
+            "degrade_target_speed": degrade_target_speed,
+            "degraded_hold_seconds": degraded_hold_seconds,
+            "restore_after_degraded_validation": restore_after_degraded_validation,
+            "targets": targets_resolved,
+            "stress_orchestrator_report": stress_report_path,
+            "orchestrator_summary": src_report,
+        })
+
+        #file_overrides["degraded_member_hold_event"] = str(degraded_event_artifact)
+
     progress.info(f"stress_report_path={stress_report_path}")
     progress.info(f"stress_event_elapsed_sec={time.time() - t0:.1f}")
 
@@ -2717,6 +2945,9 @@ def run_single_scenario(
         post_window=post_window,
         post_sample_count=post_sample_count,
         post_sample_interval=post_sample_interval,
+        ecmp_analysis_node=ecmp_analysis_node,
+        ecmp_analysis_interface=ecmp_analysis_interface,
+        ecmp_analysis_targets=ecmp_analysis_targets,
     )
     progress.info(f"rca_case_summary={case_summary_path}")
     progress.info(f"rca_case_elapsed_sec={time.time() - t0:.1f}")
@@ -3164,6 +3395,10 @@ def run_suite(
     bug_replay_count: int,
     post_sample_count: int,
     post_sample_interval: int,
+    ecmp_analysis_node: Optional[str] = None,
+    ecmp_analysis_interface: Optional[str] = None,
+    ecmp_analysis_targets: Optional[str] = None,
+    degraded_ecmp_analysis_targets:Optional[str] = None,
 ) -> Dict[str, Any]:
     scenarios = SUITES[suite_name]
     suite_results: List[Dict[str, Any]] = []
@@ -3229,6 +3464,10 @@ def run_suite(
                 bug_replay_count=bug_replay_count,
                 post_sample_count=post_sample_count,
                 post_sample_interval=post_sample_interval,
+                ecmp_analysis_node=ecmp_analysis_node,
+                ecmp_analysis_interface=ecmp_analysis_interface,
+                degraded_sample_start_delay=degraded_sample_start_delay,
+                degraded_ecmp_analysis_targets=degraded_ecmp_analysis_targets,
             )
             suite_results.append(result)
 
@@ -3488,6 +3727,52 @@ def parse_args() -> argparse.Namespace:
                     choices=["all_at_once", "flow_by_flow", "batch"])
     parser.add_argument("--ecmp-spec-tolerance-pct", type=float, default=15.0)
 
+    parser.add_argument(
+        "--ecmp-analysis-node",
+        default=None,
+        help="Override ECMP analysis node. Use when stress target differs from ECMP decision node.",
+    )
+
+    parser.add_argument(
+        "--ecmp-analysis-interface",
+        default=None,
+        help="Optional ECMP analysis interface override.",
+    )
+    parser.add_argument(
+        "--ecmp-analysis-targets",
+        default=None,
+        help=(
+            "Comma-separated ECMP analysis targets, e.g. "
+            "leaf1:et-0/0/11:0,leaf1:et-0/0/40:0."
+        ),
+    )
+
+    parser.add_argument("--degraded-hold-seconds", type=int, default=0)
+    parser.add_argument("--degraded-sample-count", type=int, default=3)
+    parser.add_argument("--degraded-sample-interval", type=int, default=60)
+    parser.add_argument("--degrade-target-speed", default=None)
+    parser.add_argument(
+        "--restore-after-degraded-validation",
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument("--degraded-ecmp-sample-count", type=int, default=3)
+    parser.add_argument("--degraded-ecmp-sample-interval", type=int, default=30)
+
+    parser.add_argument(
+        "--degraded-sample-start-delay",
+        type=int,
+        default=60,
+        help="Seconds to wait after disabling degraded members before collecting degraded ECMP samples.",
+    )
+
+    parser.add_argument(
+        "--degraded-ecmp-analysis-targets",
+        default="",
+        help="Comma-separated node:interface list to collect during degraded hold.",
+    )
+
     args = parser.parse_args()
     normalize_phase_timing_args(args)
 
@@ -3594,7 +3879,57 @@ def main() -> int:
                 post_sample_interval=args.post_sample_interval,
                 pre_event_stabilize_seconds=args.pre_event_stabilize_seconds,
                 strict_pre_event_gate=args.strict_pre_event_gate,
+                ecmp_analysis_node=args.ecmp_analysis_node,
+                ecmp_analysis_interface=args.ecmp_analysis_interface,
+                ecmp_analysis_targets=args.ecmp_analysis_targets,
+                degraded_hold_seconds=args.degraded_hold_seconds,
+                restore_after_degraded_validation=args.restore_after_degraded_validation,
+                degraded_ecmp_sample_count=args.degraded_ecmp_sample_count,
+                degraded_ecmp_sample_interval=args.degraded_ecmp_sample_interval,
+                degraded_sample_start_delay=args.degraded_sample_start_delay,
+                degraded_ecmp_analysis_targets=args.degraded_ecmp_analysis_targets,
+
             )
+        
+        # Final safety UI rebuild after all RCA/ECMP outputs are written.
+        summary_path = os.path.join(
+            "artifacts", "campaigns", args.rca_run_id, "rca_case_summary.json"
+        )
+
+        ui_report_path = os.path.join(
+            "artifacts", "campaigns", args.rca_run_id, "rca_ui_report.json"
+        )
+
+
+        try:
+            if os.path.exists(summary_path) and os.path.exists(ui_report_path):
+                from controller.rca_ui_report_builder import build_rca_ui_report
+
+                refreshed = build_rca_ui_report(summary_path)
+
+                with open(ui_report_path) as f:
+                    existing = json.load(f)
+
+                for key in (
+                    "ecmp_recovery",
+                    "ecmp_recovery_input",
+                    "ecmp_recovery_view",
+                    "ecmp_hierarchy_lifecycle",
+                ):
+                    if key in refreshed:
+                        existing[key] = refreshed[key]
+
+                atomic_write_json(ui_report_path, existing, indent=2, sort_keys=False)
+
+                print(f"[FINAL-ECMP-UI-REFRESH] updated ECMP sections only: {ui_report_path}")
+
+            elif os.path.exists(summary_path):
+                built_path = build_ui_report(summary_path)
+                print(f"[FINAL-UI-BUILD] rca_ui_report built because missing: {built_path}")
+
+        except Exception as exc:
+            print(f"[FINAL-ECMP-UI-REFRESH-WARN] failed: {exc}")
+
         if args.suite_id:
             summary_path = os.path.join(
                 "artifacts", "campaigns", args.rca_run_id, "rca_case_summary.json"
@@ -3672,6 +4007,12 @@ def main() -> int:
             bug_replay_count=args.bug_replay_count,
             post_sample_count=args.post_sample_count,
             post_sample_interval=args.post_sample_interval,
+            ecmp_analysis_node=args.ecmp_analysis_node,
+            ecmp_analysis_interface=args.ecmp_analysis_interface,
+            ecmp_analysis_targets=args.ecmp_analysis_targets,
+            degraded_hold_seconds=args.degraded_hold_seconds,
+            restore_after_degraded_validation=args.restore_after_degraded_validation,
+            degraded_ecmp_analysis_targets=degraded_ecmp_analysis_targets,
         )
 
         return 0 if suite_summary["failed"] == 0 else 1

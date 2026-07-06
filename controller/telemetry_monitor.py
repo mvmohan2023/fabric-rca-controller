@@ -24,6 +24,51 @@ DEFAULT_TELEMETRY_SERVER = os.environ.get("TELEMETRY_SERVER", "10.83.6.46")
 DEFAULT_GNMI_PORT = 60061
 DEFAULT_TOPOLOGY = DEFAULT_TOPOLOGY_PATH
 
+def _load_topology_node_interfaces(topology_path):
+    import json
+
+    node_ifaces = {}
+
+    if not topology_path:
+        return node_ifaces
+
+    try:
+        with open(topology_path) as f:
+            data = json.load(f)
+    except Exception:
+        return node_ifaces
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            node = obj.get("node") or obj.get("local_node") or obj.get("device")
+            iface = obj.get("interface") or obj.get("local_interface") or obj.get("ifname")
+
+            if node and iface:
+                node_ifaces.setdefault(str(node), set()).add(str(iface))
+
+            for v in obj.values():
+                walk(v)
+
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+
+    walk(data)
+    return node_ifaces
+
+
+def _extract_interface_from_path(path):
+    marker = "interface[name="
+    if marker not in str(path):
+        return None
+
+    try:
+        start = str(path).index(marker) + len(marker)
+        end = str(path).index("]", start)
+        return str(path)[start:end].strip("'\"")
+    except Exception:
+        return None
+
 
 def progress_log_path_for_run(run_id: str) -> str:
     return os.path.join("artifacts", "campaigns", run_id, "run_progress.log")
@@ -660,7 +705,9 @@ def _collect_single_node(
     inventory_indexes: Dict[str, Any],
     timeout: int,
     default_gnmi_port: int,
+    topology_node_interfaces: Dict[str, set],
 ) -> Dict[str, Any]:
+
 
     node_result: Dict[str, Any] = {
         "node": node,
@@ -702,6 +749,16 @@ def _collect_single_node(
         print(f"[TELEMETRY-RESOLVE] node={node} target={target}")
 
         for sub_path in node_paths:
+            iface = _extract_interface_from_path(sub_path)
+            if iface:
+                valid_ifaces = topology_node_interfaces.get(str(node), set())
+                if valid_ifaces and iface not in valid_ifaces:
+                    print(
+                        f"[TELEMETRY-SKIP] node={node} interface={iface} "
+                        f"reason=interface_not_present_on_node"
+                    )
+                    continue
+
             print(f"[TELEMETRY] node={node} sub_path={sub_path}")
 
             payloads, command_used, stderr_text = run_gnmic_once(
@@ -764,6 +821,7 @@ def collect_snapshot(
     default_gnmi_port: int,
     topology_path: str,
     per_node_paths_override: Optional[Dict[str, List[str]]] = None,
+    topology_node_interfaces: Dict[str, set] = None,
 ) -> Dict[str, Any]:
 
     progress = ProgressLogger(progress_log_path_for_run(run_id))
@@ -812,6 +870,7 @@ def collect_snapshot(
                 inventory_indexes=inventory_indexes,
                 timeout=timeout,
                 default_gnmi_port=default_gnmi_port,
+                topology_node_interfaces=topology_node_interfaces or {},
             ): node
             for node in nodes
         }
@@ -1035,7 +1094,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-
+    topology_node_interfaces = _load_topology_node_interfaces(
+        getattr(args, "topology", None)
+    )
     try:
         catalog = load_catalog(args.catalog)
         paths = get_profile_paths(catalog, args.profile)
@@ -1056,6 +1117,7 @@ def main() -> int:
             run_id=args.run_id,
             default_gnmi_port=args.default_gnmi_port,
             topology_path=args.topology,
+            topology_node_interfaces=topology_node_interfaces,
         )
 
         json_path, txt_path = build_output_paths(

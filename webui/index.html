@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Fabric RCA UI</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260424c" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260627d" />
 </head>
 <body>
   <div class="app-shell">
@@ -56,11 +56,20 @@
       <section class="content-grid single-col">
         <div class="card">
           <div class="card-header">
-            <h3>RCA Verdict</h3>
+            <h3>Executive RCA Dashboard</h3>
           </div>
           <div id="summaryBlock" class="summary-block"></div>
         </div>
       </section>
+
+     <section class="content-grid single-col">
+       <div class="card">
+         <div class="card-header">
+           <h3>Engineering Investigation</h3>
+         </div>
+         <div id="engineeringInvestigationBlock" class="summary-block"></div>
+       </div>
+     </section>
 
       <section class="card-grid stats-grid">
         <div class="card stat-card">
@@ -94,15 +103,6 @@
             <h3>Top 3 Hotspots</h3>
           </div>
           <div id="hotspotsTable" class="table-wrap"></div>
-        </div>
-      </section>
-
-      <section class="content-grid single-col">
-        <div class="card">
-          <div class="card-header">
-            <h3>RCA Executive Summary</h3>
-          </div>
-          <div id="rcaSummaryBlock" class="evidence-block"></div>
         </div>
       </section>
 
@@ -277,6 +277,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260424c"></script>
+  <script src="/static/app.js?v=20260627d"></script>
 </body>
 </html>

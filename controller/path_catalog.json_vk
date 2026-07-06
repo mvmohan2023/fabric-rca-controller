@@ -78,7 +78,8 @@
         "/interfaces/interface[name={interface}]/state/counters/in-discards",
         "/interfaces/interface[name={interface}]/state/counters/in-errors",
         "/interfaces/interface[name={interface}]/state/counters/out-discards",
-        "/interfaces/interface[name={interface}]/state/counters/out-errors"
+        "/interfaces/interface[name={interface}]/state/counters/out-errors",
+        "/interfaces/interface[name={interface}]/state/counters/in-pause-pkts"
       ]
     },
     "deep_congestion_full": {
@@ -93,20 +94,12 @@
         "/junos/system/linecard/optics/"
       ]
     },
-   "hotspot_congestion_qmon_phase1": {
+   "hotspot_congestion_qmon_phase": {
      "description": "Lightweight qmon-only telemetry for phase-aware RCA sampling (pre/recover windows)",
      "paths": [
        "/junos/system/linecard/qmon-sw",
        "/interfaces/interface[name={interface}]/state/counters/in-octets",
        "/interfaces/interface[name={interface}]/state/counters/out-octets"
-     ]
-   },
-   "hotspot_congestion_qmon_phase": {
-     "description": "Lightweight qmon-only telemetry for phase-aware RCA sampling (pre/recover windows)",
-     "paths": [
-       "/junos/system/linecard/qmon-sw",
-       "/interfaces/interface/state/counters/in-octets",
-       "/interfaces/interface/state/counters/out-octets"
      ]
    }
   }

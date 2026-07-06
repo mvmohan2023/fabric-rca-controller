@@ -33,6 +33,7 @@ const els = {
   badgeConfidence: document.getElementById("badgeConfidence"),
 
   summaryBlock: document.getElementById("summaryBlock"),
+  engineeringInvestigationBlock: document.getElementById("engineeringInvestigationBlock"),
   metadataBlock: document.getElementById("metadataBlock"),
   rcaSummaryBlock: document.getElementById("rcaSummaryBlock"),
 
@@ -129,6 +130,36 @@ function formatDecimal(value, digits = 2) {
     return "-";
   }
   return Number(value).toFixed(digits);
+}
+
+function formatSpreadWithTolerance(target, degradedSurvivor) {
+  const targetSpread = targetSpeedSurvivorSpread(target, degradedSurvivor);
+
+  const spread = targetSpread
+    ? targetSpread.spread
+    : degradedSurvivor && degradedSurvivor.worst_survivor_spread_pct != null
+      ? Number(degradedSurvivor.worst_survivor_spread_pct)
+      : null;
+
+  if (spread == null || Number.isNaN(spread)) return "-";
+
+  const tolerance = degradedSurvivor && degradedSurvivor.tolerance_fraction != null
+    ? Number(degradedSurvivor.tolerance_fraction)
+    : 0.15;
+
+  const spreadText = `${(spread * 100).toFixed(1)}%`;
+  const toleranceText = `${(tolerance * 100).toFixed(1)}%`;
+  const speedText = targetSpread ? ` (${targetSpread.speed} group)` : " (all survivor groups)";
+
+  return spread > tolerance
+    ? `${spreadText} ⚠ Exceeds ${toleranceText}${speedText}`
+    : `${spreadText} within ${toleranceText}${speedText}`;
+}
+
+function formatSharePct(value, digits = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+  return `${(n * 100).toFixed(digits)}%`;
 }
 
 function formatConfidence(value) {
@@ -371,6 +402,183 @@ function renderHotspotType(row) {
   return `<span class="cos-chip cos-chip-neutral">Info</span>`;
 }
 
+function renderEngineeringVerdictCard(report) {
+  const er = report.engineering_reasoning || {};
+  const exec = er.executive_assessment || {};
+  const traffic = er.traffic_assessment || {};
+  const verdict = er.engineering_verdict || {};
+  const origin = exec.congestion_origin_candidate || {};
+  const eventR = er.event_reasoning || {};
+  const ecmpR = er.ecmp_reasoning || {};
+  const queueR = er.queue_reasoning || {};
+  const intfR = er.interface_reasoning || {};
+  const roceR = er.roce_reasoning || {};
+  const causalityR = er.causality_reasoning || {};
+  const confidenceRows = er.confidence_breakdown || [];
+  
+  if (!er || Object.keys(er).length === 0) {
+    return "";
+  }
+
+  const eventTargets = (exec.event_targets || []).join(", ") || "N/A";
+
+  const originText = origin.node
+    ? `${origin.node} / ${origin.interface || "unknown"} / q${origin.queue ?? "unknown"}`
+    : "N/A";
+
+  const impact = (traffic.impact_signals || [])
+    .map(s => {
+      if (typeof s === "string") return s;
+      return `${s.signal || "Signal"} (${s.severity || "info"}${s.value !== null && s.value !== undefined ? `: ${s.value}` : ""})`;
+    })
+    .join(", ") || "N/A";
+
+  return `
+    <div class="summary-item full-row" style="border-left: 4px solid #38bdf8;">
+      <div class="summary-label">Engineering Verdict</div>
+      <div class="summary-value big-status">${escapeHtml(verdict.confidence || exec.engineering_confidence || "N/A")}</div>
+      <div class="summary-subtext" style="margin-top:8px;">
+        ${escapeHtml(verdict.summary || "No engineering verdict available.")}
+      </div>
+
+      <div class="summary-grid summary-grid-2" style="margin-top:12px;">
+        <div class="summary-item">
+          <div class="summary-label">Event Target</div>
+          <div class="summary-value">${escapeHtml(eventTargets)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Congestion Origin Candidate</div>
+          <div class="summary-value">${escapeHtml(originText)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Victim RoCEv2 Flow</div>
+          <div class="summary-value">${escapeHtml(traffic.victim_flow || exec.victim_flow || "N/A")}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">TX / RX</div>
+          <div class="summary-value">${escapeHtml(traffic.tx_port || "N/A")} → ${escapeHtml(traffic.rx_port || "N/A")}</div>
+        </div>
+        <div class="summary-item full-row">
+          <div class="summary-label">RoCEv2 Impact Signals</div>
+          <div class="summary-value">${escapeHtml(impact)}</div>
+        </div>
+        <div class="summary-item full-row">
+          <div class="summary-label">Traffic Interpretation</div>
+          <div class="summary-value">${escapeHtml(traffic.interpretation || "N/A")}</div>
+        </div>
+        <div class="summary-item full-row">
+          <div class="summary-label">Confidence Reason</div>
+          <div class="summary-value">${escapeHtml(verdict.confidence_reason || "N/A")}</div>
+        </div>
+	<div class="summary-item full-row">
+           <div class="summary-label">Most Likely Cause</div>
+           <div class="summary-value">
+             ${escapeHtml(causalityR.most_likely_cause || "N/A")}
+        </div>
+	<div class="summary-item full-row">
+           <div class="summary-label">Confidence Breakdown</div>
+           <div class="summary-value">
+             ${confidenceRows.map(r =>
+             `${r.component}: ${r.confidence} — ${r.reason}`
+             ).map(escapeHtml).join("<br>")}
+           </div>
+         </div>
+      </div>
+    </div>
+       `;
+}
+
+function renderEngineeringInvestigation(report) {
+    const er = report.engineering_reasoning || {};
+
+    return `
+    <div class="stack-card">
+
+        <div class="stack-card-header">
+            🧠 Engineering Investigation Report
+        </div>
+
+        <div class="stack-card-body">
+
+            ${renderEventReasoning(er.event_reasoning || {})}
+
+            ${renderECMPReasoning(er.ecmp_reasoning || {})}
+
+            ${renderQueueReasoning(er.queue_reasoning || {})}
+
+            ${renderInterfaceReasoning(er.interface_reasoning || {})}
+
+            ${renderRoCEReasoning(er.roce_reasoning || {})}
+	    
+	    ${renderEvidenceReasoning(er.evidence_reasoning || {})}
+
+            ${renderCausalityReasoning(er.causality_reasoning || {})}
+
+            ${renderConfidenceBreakdown(er.confidence_breakdown || [])}
+
+            ${renderFinalEngineeringVerdict(er.engineering_verdict || {})}
+
+        </div>
+
+    </div>
+    `;
+}
+
+
+function renderEventReasoning(event) {
+
+    if (!event || Object.keys(event).length === 0)
+        return "";
+
+    return `
+    <div class="stack-card">
+
+        <div class="stack-card-header">
+            🟢 Event Investigation
+        </div>
+
+        <div class="stack-card-body">
+
+            <table class="table">
+
+                <tr>
+                    <th>Scenario</th>
+                    <td>${escapeHtml(event.scenario || "N/A")}</td>
+                </tr>
+
+                <tr>
+                    <th>Status</th>
+                    <td>${escapeHtml(event.status || "N/A")}</td>
+                </tr>
+
+                <tr>
+                    <th>Execution</th>
+                    <td>${escapeHtml(event.execution || "N/A")}</td>
+                </tr>
+
+                <tr>
+                    <th>Recovery</th>
+                    <td>${escapeHtml(event.recovery || "N/A")}</td>
+                </tr>
+
+                <tr>
+                    <th>Targets</th>
+                    <td>${escapeHtml((event.targets || []).join(", "))}</td>
+                </tr>
+
+            </table>
+
+            <p>
+                ${escapeHtml(event.interpretation || "")}
+            </p>
+
+        </div>
+
+    </div>
+    `;
+}
+
+
 function renderSummary(report) {
   const summary = report.summary || {};
   const rootCause = report.root_cause || {};
@@ -413,34 +621,366 @@ function renderSummary(report) {
     hasHotspots && contributing.length
       ? contributing.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
       : `<li>No queue-level congestion hotspot was identified in the selected run.</li>`;
+  
+  els.summaryBlock.innerHTML = renderExecutiveSummary(report);
 
-  els.summaryBlock.innerHTML = `
-    <div class="summary-grid summary-grid-2">
+  if (els.engineeringInvestigationBlock) {
+    els.engineeringInvestigationBlock.innerHTML = renderEngineeringInvestigation(report);
+  }
+}
+
+function renderStatusBadge(status) {
+    const s = (status || "").toUpperCase();
+
+    if (s === "PASS")
+        return `<span class="badge badge-success">PASS</span>`;
+
+    if (s === "FAIL")
+        return `<span class="badge badge-danger">FAIL</span>`;
+
+    if (s === "MEDIUM")
+        return `<span class="badge badge-warning">MEDIUM</span>`;
+
+    return `<span class="badge badge-neutral">${escapeHtml(status)}</span>`;
+}
+
+function renderExecutiveSummary(report) {
+  const er = report.engineering_reasoning || {};
+  const eventR = er.event_reasoning || {};
+  const ecmpR = er.ecmp_reasoning || {};
+  const queueR = er.queue_reasoning || {};
+  const roceR = er.roce_reasoning || {};
+  const verdict = er.engineering_verdict || {};
+  const causality = er.causality_reasoning || {};
+  const scenario =
+    (eventR.scenario || "N/A")
+        .replaceAll("_"," ")
+        .replace(/\b\w/g, c => c.toUpperCase());
+  const eventStatus = eventR.status === "Recovered" ? "PASS" : "WARN";
+  const ecmpStatus = ecmpR.regression_detected ? "FAIL" : "PASS";
+  const queueStatus = queueR.discard_signals && queueR.discard_signals.length ? "FAIL" : "PASS";
+  const roceStatus = roceR.impact_signals && roceR.impact_signals.length ? "FAIL" : "PASS";
+  return `
+    <div class="summary-grid summary-grid-4">
       <div class="summary-item">
-        <div class="summary-label">Primary Cause</div>
-        <div class="summary-value big-status">${escapeHtml(primaryCause)}</div>
+        <div class="summary-label">Scenario</div>
+        <div class="summary-value big-status">${escapeHtml(scenario)}</div>
       </div>
+
+      <div class="summary-item">
+        <div class="summary-label">Event</div>
+        <div class="summary-value big-status">${renderStatusBadge(eventStatus)}</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">ECMP</div>
+        <div class="summary-value big-status">${renderStatusBadge(ecmpStatus)}</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">Queue</div>
+        <div class="summary-value big-status">${renderStatusBadge(queueStatus)}</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">RoCE</div>
+        <div class="summary-value big-status">${renderStatusBadge(roceStatus)}</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">Causality</div>
+        <div class="summary-value big-status">${renderStatusBadge(causality.causality_confidence || "N/A")}</div>
+      </div>
+
+      <div class="summary-item">
+        <div class="summary-label">Overall</div>
+        <div class="summary-value big-status">${escapeHtml(causality.most_likely_cause || "N/A")}</div>
+      </div>
+
       <div class="summary-item">
         <div class="summary-label">Confidence</div>
-        <div class="summary-value big-status">${escapeHtml(confidenceText)}</div>
+        <div class="summary-value big-status">${renderStatusBadge(verdict.confidence || "N/A")}</div>
       </div>
-      <div class="summary-item">
-        <div class="summary-label">Severity</div>
-        <div class="summary-value big-status">${escapeHtml(severityText)}</div>
-      </div>
-      <div class="summary-item">
-        <div class="summary-label">Top Hotspot</div>
-        <div class="summary-value big-status">${escapeHtml(topHotspot)}</div>
-      </div>
+
       <div class="summary-item full-row">
-        <div class="summary-label">Recommended Action</div>
-        <div class="summary-value big-status">${escapeHtml(recommendedAction)}</div>
+        <div class="summary-label">Final Verdict</div>
+        <div class="summary-value">${escapeHtml(verdict.summary || "N/A")}</div>
       </div>
-      <div class="summary-item full-row">
-        <div class="summary-label">Key Signals</div>
-        <div class="summary-value big-status">
-          <ul class="compact-list">${findingsHtml}</ul>
-        </div>
+    </div>
+  `;
+}
+
+function renderECMPReasoning(ecmp) {
+  if (!ecmp || Object.keys(ecmp).length === 0) return "";
+
+  const reasonCodes = (ecmp.reason_codes || []).join(", ") || "N/A";
+
+  return `
+    <div class="stack-card">
+      <div class="stack-card-header">🟢 ECMP Investigation</div>
+      <div class="stack-card-body">
+        <table class="table">
+          <tr><th>Analysis Status</th><td>${escapeHtml(ecmp.analysis_status || "N/A")}</td></tr>
+          <tr><th>Targets</th><td>${escapeHtml(String(ecmp.target_count ?? "N/A"))}</td></tr>
+          <tr><th>Expected</th><td>${escapeHtml(String(ecmp.expected_count ?? "N/A"))}</td></tr>
+          <tr><th>Defect Candidates</th><td>${escapeHtml(String(ecmp.defect_candidate_count ?? "N/A"))}</td></tr>
+          <tr><th>Abnormal</th><td>${escapeHtml(String(ecmp.abnormal_count ?? "N/A"))}</td></tr>
+          <tr><th>Regression Detected</th><td>${escapeHtml(String(ecmp.regression_detected ?? "N/A"))}</td></tr>
+          <tr><th>Reason Codes</th><td>${escapeHtml(reasonCodes)}</td></tr>
+        </table>
+        <p>${escapeHtml(ecmp.interpretation || "")}</p>
+      </div>
+    </div>
+  `;
+}
+function renderQueueReasoning(queue) {
+  if (!queue || Object.keys(queue).length === 0) return "";
+
+  const origin = queue.origin || {};
+  const discardSignals = queue.discard_signals || [];
+
+  const discardText = discardSignals.length
+    ? discardSignals.map(s => `${s.signal}: ${s.value}`).map(escapeHtml).join("<br>")
+    : "N/A";
+
+  return `
+    <div class="stack-card">
+      <div class="stack-card-header">🟠 Queue / Discard Investigation</div>
+      <div class="stack-card-body">
+        <table class="table">
+          <tr><th>Origin</th><td>${escapeHtml(origin.node || "N/A")} / ${escapeHtml(origin.interface || "N/A")} / q${escapeHtml(String(origin.queue ?? "N/A"))}</td></tr>
+          <tr><th>Classification</th><td>${escapeHtml(queue.classification || "N/A")}</td></tr>
+	  <tr>
+            <th>Classification Explanation</th>
+            <td>${escapeHtml(queue.classification_explanation || "N/A")}</td>
+         </tr>
+         <tr>
+            <th>Trend Interpretation</th>
+            <td>${escapeHtml(queue.trend_interpretation || "N/A")}</td>
+          </tr>
+          <tr><th>Severity</th><td>${escapeHtml(queue.severity || "N/A")}</td></tr>
+          <tr><th>Forwarding Class</th><td>${escapeHtml(queue.forwarding_class || "N/A")}</td></tr>
+          <tr><th>Event Delta</th><td>${escapeHtml(queue.event_delta_classification || "N/A")}</td></tr>
+          <tr><th>Tail Linger Trend</th><td>${escapeHtml(queue.tail_linger_trend || "N/A")}</td></tr>
+          <tr><th>Recovery Ratio</th><td>${escapeHtml(String(queue.recovery_ratio_tail ?? "N/A"))}</td></tr>
+          <tr><th>Discard / Queue Signals</th><td>${discardText}</td></tr>
+        </table>
+        <p>${escapeHtml(queue.interpretation || "")}</p>
+      </div>
+    </div>
+  `;
+}
+function renderEvidenceReasoning(evidence) {
+  if (!evidence || !evidence.steps || evidence.steps.length === 0) return "";
+
+  const rows = evidence.steps.map(s => `
+    <div class="timeline-item">
+      <div class="timeline-status">${escapeHtml(s.status || "INFO")}</div>
+      <div class="timeline-content">
+        <div class="summary-label">${escapeHtml(s.title || "Evidence Step")}</div>
+        <div class="summary-value">${escapeHtml(s.evidence || "N/A")}</div>
+      </div>
+    </div>
+  `).join("");
+
+  return `
+    <div class="stack-card">
+      <div class="stack-card-header">🧩 Evidence Reasoning Chain</div>
+      <div class="stack-card-body">
+        ${rows}
+      </div>
+    </div>
+  `;
+}
+
+function renderInterfaceReasoning(intf) {
+  if (!intf || Object.keys(intf).length === 0) return "";
+
+  const origin = intf.origin_interface || {};
+  const signals = intf.physical_signals || [];
+
+  const signalRows = signals.length
+    ? signals.map(s => `
+        <tr>
+          <td>${escapeHtml(s.signal || "N/A")}</td>
+          <td>${escapeHtml(String(s.value ?? "N/A"))}</td>
+        </tr>
+      `).join("")
+    : `<tr><td colspan="2">N/A</td></tr>`;
+  
+  return `
+    <div class="stack-card">
+      <div class="stack-card-header">⚪ Interface / Physical Investigation</div>
+      <div class="stack-card-body">
+        <table class="table">
+          <tr>
+            <th>Origin Interface</th>
+            <td>${escapeHtml(origin.node || "N/A")} / ${escapeHtml(origin.interface || "N/A")}</td>
+          </tr>
+          <tr>
+            <th>Matched Rows</th>
+            <td>${escapeHtml(String(intf.matched_rows ?? "N/A"))}</td>
+          </tr>
+          <tr>
+            <th>Telemetry Status</th>
+            <td>${escapeHtml(intf.telemetry_status || "N/A")}</td>
+          </tr>
+        </table>
+
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Physical / Interface Signal</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${signalRows}
+          </tbody>
+        </table>
+
+        <p>${escapeHtml(intf.interpretation || "")}</p>
+      </div>
+    </div>
+  `;
+}
+function renderRoCEReasoning(roce) {
+  if (!roce || Object.keys(roce).length === 0) return "";
+
+  const signals = roce.impact_signals || [];
+
+  const signalRows = signals.length
+    ? signals.map(s => `
+        <tr>
+          <td>${escapeHtml(s.signal || "N/A")}</td>
+          <td>${escapeHtml(s.severity || "N/A")}</td>
+          <td>${escapeHtml(String(s.value ?? "N/A"))}</td>
+        </tr>
+      `).join("")
+    : `<tr><td colspan="3">N/A</td></tr>`;
+
+  return `
+    <div class="stack-card">
+      <div class="stack-card-header">🔴 RoCEv2 Investigation</div>
+      <div class="stack-card-body">
+        <table class="table">
+          <tr><th>Victim Flow</th><td>${escapeHtml(roce.victim_flow || "N/A")}</td></tr>
+          <tr><th>TX Port</th><td>${escapeHtml(roce.tx_port || "N/A")}</td></tr>
+          <tr><th>RX Port</th><td>${escapeHtml(roce.rx_port || "N/A")}</td></tr>
+        </table>
+
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Signal</th>
+              <th>Severity</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${signalRows}
+          </tbody>
+        </table>
+
+        <p>${escapeHtml(roce.interpretation || "")}</p>
+      </div>
+    </div>
+  `;
+}
+function renderCausalityReasoning(causality) {
+  if (!causality || Object.keys(causality).length === 0) return "";
+
+  const facts = causality.observed_facts || [];
+  const alternatives = causality.alternative_explanations || [];
+
+  const factRows = facts.length
+    ? facts.map(f => `<li>${escapeHtml(f)}</li>`).join("")
+    : "<li>N/A</li>";
+
+  const altRows = alternatives.length
+    ? alternatives.map(a => `
+        <tr>
+          <td>${escapeHtml(a.hypothesis || "N/A")}</td>
+          <td>${escapeHtml(a.assessment || "N/A")}</td>
+          <td>${escapeHtml(a.reason || "N/A")}</td>
+        </tr>
+      `).join("")
+    : `<tr><td colspan="3">N/A</td></tr>`;
+
+  return `
+    <div class="stack-card">
+      <div class="stack-card-header">🧠 Causality Analysis</div>
+      <div class="stack-card-body">
+        <table class="table">
+          <tr><th>Most Likely Cause</th><td>${escapeHtml(causality.most_likely_cause || "N/A")}</td></tr>
+          <tr><th>Causality Confidence</th><td>${escapeHtml(causality.causality_confidence || "N/A")}</td></tr>
+        </table>
+
+        <div class="summary-label">Observed Facts</div>
+        <ul>
+          ${factRows}
+        </ul>
+
+        <div class="summary-label">Alternative Explanations</div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Hypothesis</th>
+              <th>Assessment</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${altRows}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+function renderConfidenceBreakdown(rows) {
+  if (!rows || rows.length === 0) return "";
+
+  const body = rows.map(r => `
+    <tr>
+      <td>${escapeHtml(r.component || "N/A")}</td>
+      <td>${escapeHtml(r.confidence || "N/A")}</td>
+      <td>${escapeHtml(r.reason || "N/A")}</td>
+    </tr>
+  `).join("");
+
+  return `
+    <div class="stack-card">
+      <div class="stack-card-header">📊 Confidence Breakdown</div>
+      <div class="stack-card-body">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Confidence</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${body}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+function renderFinalEngineeringVerdict(verdict) {
+  if (!verdict || Object.keys(verdict).length === 0) return "";
+
+  return `
+    <div class="stack-card">
+      <div class="stack-card-header">🏁 Final Engineering Verdict</div>
+      <div class="stack-card-body">
+        <table class="table">
+          <tr><th>Confidence</th><td>${escapeHtml(verdict.confidence || "N/A")}</td></tr>
+          <tr><th>Confidence Reason</th><td>${escapeHtml(verdict.confidence_reason || "N/A")}</td></tr>
+        </table>
+        <p>${escapeHtml(verdict.summary || "No final engineering verdict available.")}</p>
       </div>
     </div>
   `;
@@ -867,7 +1407,7 @@ function renderEcmpRecovery(view) {
           <th>Port Speed</th>
           <th>Baseline</th>
           <th>Recovery</th>
-          <th>Speed Alignment</th>
+          <th>Speed Weighting</th>
           <th>Delta</th>
           <th>Verdict</th>
         </tr>
@@ -877,7 +1417,7 @@ function renderEcmpRecovery(view) {
           <tr class="clickable-row ${ecmpRowClass(t.recovery_verdict)}" data-ecmp-index="${idx}">
 	    <td class="mono-text">${escapeHtml(ecmpDisplayTarget(t.target_id))}</td>
             <td>${escapeHtml(safe(t.target_port_speed_label || "-"))}</td>
-            <td>${escapeHtml(ecmpLabel("baseline_state", t.baseline_state))}</td>
+	    <td>${escapeHtml(ecmpBaselineLabel(t))}</td>
             <td>${escapeHtml(ecmpLabel("recovery_convergence_state", t.recovery_convergence_state))}</td>
             <td>${escapeHtml(ecmpLabel("speed_alignment_state", t.speed_alignment_state))}</td>
             <td>${escapeHtml(ecmpLabel("delta_outcome", t.delta_outcome))}</td>
@@ -900,14 +1440,149 @@ function renderEcmpRecovery(view) {
     els.ecmpRecoveryDetailPanel.innerHTML = "";
   }
 }
+
+function degradedStateBadge(state) {
+  if (state === "pass") return "🟢 PASS";
+  if (state === "warn") return "🟡 WARN";
+  if (state === "fail") return "🔴 FAIL";
+  return "⚪ UNKNOWN";
+}
+
 function ecmpDisplayTarget(targetId) {
   return String(targetId || "").replace(/~/g, ":");
+}
+
+function ecmpStatusBadge(value, label) {
+  const raw = String(value || "").toLowerCase();
+  const text = label || value || "-";
+
+  let cls = "verdict-neutral";
+
+  if (["pass", "converged", "no_event_regression", "expected", "healthy"].includes(raw)) {
+    cls = "verdict-pass";
+  } else if (["warn", "watch", "partial", "unchanged", "not_applicable", "none"].includes(raw)) {
+    cls = "verdict-watch";
+  } else if (["fail", "failed", "degraded", "worsened_vs_baseline", "defect_candidate", "abnormal"].includes(raw)) {
+    cls = "verdict-fail";
+  } else if (["unknown", ""].includes(raw)) {
+    cls = "verdict-neutral";
+  }
+
+  return `<span class="verdict-badge ${cls}">${escapeHtml(text)}</span>`;
+}
+
+function ecmpTargetSummaryBanner(target, degradedState, degradedReason) {
+  const verdict = String(target.recovery_verdict || "").toLowerCase();
+
+  if (verdict === "no_event_regression" && degradedState === "pass") {
+    return `
+      <div class="rca-banner rca-banner-pass">
+        🟢 Healthy: No event-induced ECMP regression detected. ${escapeHtml(degradedReason)}
+      </div>
+    `;
+  }
+
+  if (verdict === "no_event_regression" && degradedState === "warn") {
+    return `
+      <div class="rca-banner rca-banner-warn">
+        🟡 Degraded hold warning: No event-induced ECMP regression detected, but ${escapeHtml(degradedReason)}
+      </div>
+    `;
+  }
+
+  if (verdict === "defect_candidate" || degradedState === "fail") {
+    return `
+      <div class="rca-banner rca-banner-fail">
+        🔴 Action required: ECMP recovery or degraded hold behavior indicates a defect candidate.
+      </div>
+    `;
+  }
+
+  return `
+    <div class="rca-banner rca-banner-neutral">
+      ⚪ ECMP analysis completed. Review detailed RCA fields below.
+    </div>
+  `;
+}
+
+function degradedReasonLabel(reason, degradedSurvivor) {
+  const spread = degradedSurvivor && degradedSurvivor.worst_survivor_spread_pct != null
+    ? `${(Number(degradedSurvivor.worst_survivor_spread_pct) * 100).toFixed(1)}%`
+    : null;
+
+  const tolerance = degradedSurvivor && degradedSurvivor.tolerance_fraction != null
+    ? `${(Number(degradedSurvivor.tolerance_fraction) * 100).toFixed(1)}%`
+    : "15.0%";
+
+  const map = {
+    survivor_members_imbalanced: spread
+      ? `Traffic shifted successfully, but survivor spread exceeded tolerance (${spread} > ${tolerance})`
+      : "Traffic shifted successfully, but survivor spread exceeded configured tolerance",
+    no_degraded_share_data: "No degraded-state telemetry available",
+    no_disabled_members_identified: "Unable to identify disabled ECMP members",
+    no_surviving_members_carried_traffic: "Traffic did not redistribute to surviving members",
+    disabled_members_still_carry_traffic: "Disabled members continued carrying traffic",
+    traffic_did_not_shift_to_survivors: "Traffic failed to shift to surviving members",
+    surviving_members_carried_degraded_traffic_within_tolerance:
+      "Traffic redistributed successfully within tolerance",
+    insufficient_data: "Insufficient degraded-state validation data",
+  };
+
+  return map[reason] || reason || "-";
+}
+function targetDegradedState(target, degradedSurvivor) {
+  const targetSpread = targetSpeedSurvivorSpread(target, degradedSurvivor);
+
+  if (!targetSpread) {
+    return degradedSurvivor.verdict || target.degraded_state_balance || "unknown";
+  }
+
+  const tolerance = degradedSurvivor && degradedSurvivor.tolerance_fraction != null
+    ? Number(degradedSurvivor.tolerance_fraction)
+    : 0.15;
+
+  return targetSpread.spread > tolerance ? "warn" : "pass";
+}
+
+function targetDegradedReason(target, degradedSurvivor) {
+  const targetSpread = targetSpeedSurvivorSpread(target, degradedSurvivor);
+
+  if (!targetSpread) {
+    return degradedReasonLabel(
+      degradedSurvivor.reason || target.degraded_state_reason,
+      degradedSurvivor
+    );
+  }
+
+  const tolerance = degradedSurvivor && degradedSurvivor.tolerance_fraction != null
+    ? Number(degradedSurvivor.tolerance_fraction)
+    : 0.15;
+
+  const spreadText = `${(targetSpread.spread * 100).toFixed(1)}%`;
+  const toleranceText = `${(tolerance * 100).toFixed(1)}%`;
+
+  if (targetSpread.spread > tolerance) {
+    return `Traffic shifted successfully, but ${targetSpread.speed} survivor spread exceeded tolerance (${spreadText} > ${toleranceText})`;
+  }
+
+  return `Traffic shifted successfully; ${targetSpread.speed} survivor spread is within tolerance (${spreadText} <= ${toleranceText})`;
 }
 
 function showEcmpDetail(index) {
   if (!els.ecmpRecoveryDetailPanel) return;
 
   const target = (window._ecmpTargets || [])[index];
+
+  const raw = target.raw_report || {};
+
+  const degradedSurvivor =
+    target.degraded_survivor_validation ||
+    raw.degraded_survivor_validation ||
+    {};
+  
+  const degradedState = targetDegradedState(target, degradedSurvivor);
+  const degradedReason = targetDegradedReason(target, degradedSurvivor);
+
   if (!target) {
     els.ecmpRecoveryDetailPanel.innerHTML = "";
     return;
@@ -918,6 +1593,7 @@ function showEcmpDetail(index) {
     <div class="evidence-grid">
       <div class="evidence-card full-width">
         <h4>ECMP Target Detail</h4>
+	${ecmpTargetSummaryBanner(target, degradedState, degradedReason)}
         <div class="summary-grid summary-grid-3">
           <div class="summary-item">
             <div class="summary-label">Target</div>
@@ -938,16 +1614,16 @@ function showEcmpDetail(index) {
           </div>
           <div class="summary-item">
             <div class="summary-label">Baseline</div>
-            <div class="summary-value big-status">${escapeHtml(ecmpLabel("baseline_state", target.baseline_state))}</div>
+	    <div class="summary-value big-status">${escapeHtml(ecmpBaselineLabel(target))}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Recovery</div>
-            <div class="summary-value big-status">${escapeHtml(ecmpLabel("recovery_convergence_state", target.recovery_convergence_state))}</div>
+            <div class="summary-value big-status">${ecmpStatusBadge(target.recovery_convergence_state, ecmpLabel("recovery_convergence_state", target.recovery_convergence_state))}</div>
           </div>
   
           <div class="summary-item">
-            <div class="summary-label">Speed Alignment</div>
-            <div class="summary-value big-status">${escapeHtml(ecmpLabel("speed_alignment_state", target.speed_alignment_state))}</div>
+            <div class="summary-label">Speed Weighting</div>
+            <div class="summary-value big-status">${ecmpStatusBadge(target.speed_alignment_state, ecmpLabel("speed_alignment_state", target.speed_alignment_state))}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Dominant Port State</div>
@@ -955,29 +1631,62 @@ function showEcmpDetail(index) {
           </div>
           <div class="summary-item">
             <div class="summary-label">Delta Outcome</div>
-            <div class="summary-value big-status">${escapeHtml(ecmpLabel("delta_outcome", target.delta_outcome))}</div>
+            <div class="summary-value big-status">${ecmpStatusBadge(target.delta_outcome, ecmpLabel("delta_outcome", target.delta_outcome))}</div>
           </div>
-  
+  	  <div class="summary-item">
+            <div class="summary-label">Degraded Hold Validation</div>
+            <div class="summary-value big-status">
+             ${degradedStateBadge(degradedState)}
+             </div>
+           </div>
+           <div class="summary-item">
+             <div class="summary-label">Degraded Survivor Reason</div>
+             <div class="summary-value mono-text">
+	       ${escapeHtml(degradedReason)}
+             </div>
+           </div>
+	   <div class="summary-item">
+            <div class="summary-label">Survivor Members Share</div>
+            <div class="summary-value">
+	      ${formatSharePct(degradedSurvivor.survivor_share_pct, 1)}
+            </div>
+          </div>
+          
+          <div class="summary-item">
+            <div class="summary-label">Disabled Members Residual Share</div>
+            <div class="summary-value">
+	      ${formatSharePct(degradedSurvivor.disabled_share_pct, 1)}
+            </div>
+          </div>
+          
+          <div class="summary-item">
+            <div class="summary-label">Worst Survivor Spread</div>
+            <div class="summary-value">
+	      ${escapeHtml(formatSpreadWithTolerance(target, degradedSurvivor))}
+            </div>
+          </div>
           <div class="summary-item full-row">
-            <div class="summary-label">Expected Share</div>
+	    <div class="summary-label">Capacity-Weighted Reference (Not Used)</div>
             <div class="summary-value mono-text">${escapeHtml(formatShareMap(target.expected_group_shares))}</div>
           </div>
           <div class="summary-item full-row">
-            <div class="summary-label">Baseline Actual Share</div>
+	    <div class="summary-label">Observed Distribution — Baseline</div>
             <div class="summary-value mono-text">${escapeHtml(formatShareMap(target.baseline_group_shares))}</div>
           </div>
           <div class="summary-item full-row">
-            <div class="summary-label">Recovery Actual Share</div>
+	    <div class="summary-label">Observed Distribution — Recovery</div>
             <div class="summary-value mono-text">${escapeHtml(formatShareMap(target.recovery_group_shares))}</div>
           </div>
   
           <div class="summary-item full-row">
             <div class="summary-label">Member Pressure Summary</div>
-            <div class="summary-value big-status">${escapeHtml(safe(target.member_pressure_summary))}</div>
+            <div class="summary-value big-status">${escapeHtml(ecmpMemberPressureLabel(target.member_pressure_summary))}</div>
           </div>
+
         </div>
       </div>
       ${renderMixedSpeedSpecValidationFromTarget(target)}
+      ${renderDualDistributionValidation(target)}
       <div class="evidence-card full-width">
         <h4>Same-Speed Fairness — Baseline</h4>
         ${renderSameSpeedGroupTable(target.baseline_same_speed_group_view || [])}
@@ -998,6 +1707,31 @@ function showEcmpDetail(index) {
       </div>
     </div>
   `;
+}
+function ecmpMemberPressureLabel(value) {
+  const map = {
+    no_member_pressure_evidence: "No congestion or dominant-member pressure observed",
+    member_pressure_detected: "Member pressure detected",
+    dominant_member_pressure: "Dominant-member pressure detected",
+    unknown: "Unknown",
+  };
+
+  return map[value] || value || "-";
+}
+function targetSpeedSurvivorSpread(target, degradedSurvivor) {
+  const speed = target.target_port_speed_label || "";
+  const spreads = degradedSurvivor.same_speed_survivor_spreads || {};
+  const item = spreads[speed] || null;
+
+  if (!item || item.spread_pct == null) {
+    return null;
+  }
+
+  return {
+    speed,
+    spread: Number(item.spread_pct),
+    memberCount: item.member_count || 0,
+  };
 }
 
 function formatShareMap(obj) {
@@ -1192,16 +1926,27 @@ function renderSameSpeedGroupMembers(groups, phaseLabel = "") {
     const speedGroup =
       group.speed_group ||
       group.speed ||
+      group.group_name ||
       group.group ||
       group.name ||
+      group.speed_label ||
       "-";
 
-    const expectedPerMember = toPct(
-      group.expected_per_member_share ??
-      group.expected_per_member ??
-      group.expected_member_share ??
-      0
+    // Most reliable: derive expected/member from actual member shares.
+    // This avoids dependency on backend key names.
+    const memberShares = members.map((member) =>
+      toPct(
+        member.share ??
+        member.share_pct ??
+        member.member_share ??
+        member.actual_share ??
+        member.actual_share_pct ??
+        0
+      )
     );
+
+    const totalMemberShare = memberShares.reduce((sum, value) => sum + value, 0);
+    const expectedPerMember = members.length ? totalMemberShare / members.length : 0;
 
     return `
       <div class="evidence-card full-width">
@@ -1215,36 +1960,28 @@ function renderSameSpeedGroupMembers(groups, phaseLabel = "") {
             </tr>
           </thead>
           <tbody>
-            ${members.map((member) => {
+            ${members.map((member, idx) => {
               const memberName =
                 member.member ||
                 member.interface ||
                 member.name ||
                 "-";
 
-              const share = toPct(
-                member.share ??
-                member.share_pct ??
-                member.member_share ??
-                member.actual_share ??
-                0
-              );
+              const share = memberShares[idx] || 0;
+	      
+	      const deviation =
+		expectedPerMember > 0 ? share - expectedPerMember : null;
 
-              let deviation = member.deviation_from_equal_pct;
-              if (deviation === undefined || deviation === null || deviation === "") {
-                deviation = member.deviation_from_equal;
-              }
-
-              const deviationPct =
-                deviation !== undefined && deviation !== null && deviation !== ""
-                  ? toPct(deviation)
-                  : Math.abs(share - expectedPerMember);
+	      const deviationText =
+                deviation === null
+                  ? "-"
+                  : `${deviation >= 0 ? "+" : ""}${deviation.toFixed(1)}%`;
 
               return `
                 <tr>
                   <td>${escapeHtml(String(memberName))}</td>
                   <td>${share.toFixed(1)}%</td>
-                  <td>${deviationPct.toFixed(1)}%</td>
+		  <td>${deviationText}</td>
                 </tr>
               `;
             }).join("")}
@@ -1253,6 +1990,121 @@ function renderSameSpeedGroupMembers(groups, phaseLabel = "") {
       </div>
     `;
   }).join("");
+}
+
+function renderDualDistributionValidation(target) {
+  const dual = target.dual_distribution_validation || {};
+  const capacity = dual.capacity_weighted_validation || target.capacity_weighted_validation || {};
+  const equalMember = dual.equal_member_validation || target.equal_member_validation || {};
+  const hasCapacityRows = Object.keys(capacity.group_validation || {}).length > 0;
+  const hasEqualRows = Object.keys(equalMember.group_validation || {}).length > 0;
+
+  if (!hasCapacityRows && !hasEqualRows) {
+    return "";
+  }
+  const finalInterp =
+    dual.final_distribution_interpretation ||
+    target.final_distribution_interpretation ||
+    "-";
+
+  const fmt = (v) => {
+    const n = Number(v || 0);
+    return `${n.toFixed(1)}%`;
+  };
+
+  const renderRows = (validation) => {
+    const rows = Array.isArray(validation.rows) ? validation.rows : [];
+    if (!rows.length) {
+      return `<tr><td colspan="6" class="empty-state">No validation data available</td></tr>`;
+    }
+
+    return rows.map((row) => {
+      const status = row.status || "-";
+      const statusText = status === "in_spec" ? "In spec" : "Out of spec";
+      const badgeClass = status === "in_spec" ? "verdict-pass" : "verdict-fail";
+
+      const deviation = Number(row.deviation_pct || 0);
+      const deviationText = `${deviation >= 0 ? "+" : ""}${deviation.toFixed(1)}%`;
+
+      return `
+        <tr>
+          <td>${escapeHtml(String(row.speed_group || "-"))}</td>
+          <td>${fmt(row.expected_pct)}</td>
+          <td>${fmt(row.actual_pct)}</td>
+          <td>${fmt(row.allowed_min_pct)}–${fmt(row.allowed_max_pct)}</td>
+          <td>${deviationText}</td>
+          <td><span class="verdict-badge ${badgeClass}">${statusText}</span></td>
+        </tr>
+      `;
+    }).join("");
+  };
+
+  const finalTextMap = {
+    capacity_weighted_expected: "Capacity-weighted expected",
+    design_aligned_equal_member_dlb: "Design-Aligned / Equal-Member DLB",
+    defect_candidate: "Defect Candidate",
+  };
+
+  const finalText = finalTextMap[finalInterp] || finalInterp;
+
+  return `
+    <div class="evidence-card full-width">
+      <h4>Dual ECMP Distribution Validation</h4>
+
+      <div class="summary-grid summary-grid-3">
+        <div class="summary-item">
+          <div class="summary-label">Final Interpretation</div>
+          <div class="summary-value">${escapeHtml(finalText)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Capacity-Weighted Status</div>
+          <div class="summary-value">${escapeHtml(capacity.overall_status || "-")}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Equal-Member Status</div>
+          <div class="summary-value">${escapeHtml(equalMember.overall_status || "-")}</div>
+        </div>
+      </div>
+
+      <h5>Capacity-Weighted Validation</h5>
+      <table class="data-table compact-table spec-validation-table">
+        <thead>
+          <tr>
+            <th>Speed Group</th>
+            <th>Expected</th>
+            <th>Actual</th>
+            <th>Allowed Range</th>
+            <th>Deviation</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>${renderRows(capacity)}</tbody>
+      </table>
+
+      <h5>Equal-Member Validation</h5>
+      <table class="data-table compact-table spec-validation-table">
+        <thead>
+          <tr>
+            <th>Speed Group</th>
+            <th>Expected</th>
+            <th>Actual</th>
+            <th>Allowed Range</th>
+            <th>Deviation</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>${renderRows(equalMember)}</tbody>
+      </table>
+
+      <div class="spec-summary">
+        ${
+          finalInterp === "design_aligned_equal_member_dlb"
+            ? "Observed distribution does not match capacity-weighted expectation, but closely matches equal-member DLB behavior. Under equal port-quality conditions, this is interpreted as design-aligned behavior rather than a defect candidate."
+            : ""
+        }
+      </div>
+    </div>
+  `;
 }
 
 function ecmpVerdictRank(verdict) {
@@ -1268,15 +2120,28 @@ function ecmpVerdictRank(verdict) {
 
 function ecmpVerdictBadge(verdict) {
   const v = String(verdict || "unknown").toLowerCase();
-  const cls =
-    v === "defect_candidate" ? "badge badge-critical" :
-    v === "abnormal" ? "badge badge-high" :
-    v === "watch" ? "badge badge-medium" :
-    v === "acceptable" ? "badge badge-neutral" :
-    v === "expected" ? "badge badge-ok" :
-    "badge badge-neutral";
 
-  return `<span class="${cls}">${escapeHtml(ecmpLabel("recovery_verdict", verdict))}</span>`;
+  if (v === "no_event_regression") {
+    return '<span class="verdict-badge verdict-pass">🟢 No Event Regression</span>';
+  }
+
+  if (v === "defect_candidate") {
+    return '<span class="verdict-badge verdict-fail">🔴 Defect Candidate</span>';
+  }
+
+  if (v === "abnormal") {
+    return '<span class="verdict-badge verdict-watch">🟠 Abnormal</span>';
+  }
+
+  if (v === "watch") {
+    return '<span class="verdict-badge verdict-watch">🟡 Watch</span>';
+  }
+
+  if (v === "acceptable" || v === "expected" || v === "design_aligned") {
+    return `<span class="verdict-badge verdict-pass">🟢 ${escapeHtml(ecmpLabel("recovery_verdict", verdict))}</span>`;
+  }
+
+  return `<span class="verdict-badge verdict-neutral">${escapeHtml(ecmpLabel("recovery_verdict", verdict))}</span>`;
 }
 
 function ecmpRowClass(verdict) {
@@ -1287,6 +2152,12 @@ function ecmpRowClass(verdict) {
   if (v === "acceptable") return "row-ecmp-acceptable";
   if (v === "expected") return "row-ecmp-expected";
   return "";
+}
+function ecmpBaselineLabel(target) {
+  if (target && target.ecmp_expected_mode === "equal_member") {
+    return "Expected Equal-Score";
+  }
+  return ecmpLabel("baseline_state", target ? target.baseline_state : "");
 }
 
 function ecmpLabel(field, value) {
@@ -1306,9 +2177,10 @@ function ecmpLabel(field, value) {
       unknown: "Unknown",
     },
     speed_alignment_state: {
-      aligned: "Speed Aligned",
-      mildly_misaligned: "Mild Misalignment",
-      misaligned: "Misaligned",
+      aligned: "Speed Weighted",
+      mildly_misaligned: "Partially Speed Weighted",
+      misaligned: "Not Speed Weighted",
+      not_applicable: "Not Used",
       unknown: "Unknown",
     },
     dominant_port_state: {
@@ -1331,6 +2203,7 @@ function ecmpLabel(field, value) {
       watch: "Watch",
       abnormal: "Abnormal",
       defect_candidate: "Defect Candidate",
+      design_aligned: "Design-Aligned",
     },
     analysis_status: {
       complete: "Complete",
@@ -1343,7 +2216,7 @@ function ecmpLabel(field, value) {
   return v ? v.replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "-";
 }
 
-function ecmpStatusBadge(kind) {
+function ecmpRatioStatusBadge(kind) {
   if (kind === "good") {
     return `<span class="status-mark status-good">✅ Expected</span>`;
   }
@@ -3398,11 +4271,14 @@ function ecmpGroupReasonText(code) {
   const map = {
     group_baseline_preexisting_skew: "Baseline skew already existed across the ECMP group",
     group_recovery_stable: "Post-event distribution is stable across the group",
-    group_persistent_mixed_speed_skew: "Traffic remains misaligned across mixed-speed links",
-    group_no_post_recovery_improvement: "Recovery did not improve the pre-existing imbalance",
+    group_persistent_mixed_speed_skew: "Capacity-weighted 400G/100G mismatch is informational under equal-score ECMP mode",
+    group_no_post_recovery_improvement: "No event-induced ECMP regression detected; distribution remained stable",
     group_recovered_cleanly: "ECMP group recovered cleanly after the event",
     group_speed_aligned_after_recovery: "Post-recovery distribution matches speed-weighted expectation",
     group_contains_abnormal_targets: "Some ECMP targets still show abnormal recovery behavior",
+    group_equal_score_expected: "ECMP distribution follows equal-score member behavior",
+    group_capacity_weight_informational: "Capacity-weighted 400G/100G comparison is informational only",
+    group_degraded_warn: "Degraded hold completed, but survivor spread exceeded tolerance",
 
     persistent_ecmp_misalignment: "Persistent ECMP imbalance remains after recovery",
     persistent_ecmp_misalignment_with_pressure: "Persistent ECMP imbalance is correlated with congestion pressure",
@@ -3425,6 +4301,29 @@ function renderMixedSpeedSpecValidationFromTarget(target) {
     return num <= 1.0 ? num * 100.0 : num;
   };
 
+  const mixedSpec = target.mixed_speed_spec_validation_ui || {};
+  const isInformational =
+    mixedSpec.overall_status === "informational" ||
+    mixedSpec.status === "informational";
+
+  const specTitle = mixedSpec.title || "Mixed-Speed ECMP Spec Validation";
+  const specInterpretation = mixedSpec.interpretation || "";
+
+  const overallOutOfSpec = speedGroups.some((speed) => {
+    const exp = toPct(expected[speed]);
+    const act = toPct(actual[speed]);
+    return (
+      act < Math.max(0, exp - tolerancePct) ||
+      act > Math.min(100, exp + tolerancePct)
+    );
+  });
+
+  const specSummaryText = specInterpretation || (
+    overallOutOfSpec
+      ? "Recovery converged, but mixed-speed distribution remains out of spec relative to expected capacity weighting."
+      : "Recovery converged and mixed-speed distribution is within the configured tolerance band."
+  );
+
   const rows = speedGroups.map((speed) => {
     const exp = toPct(expected[speed]);
     const act = toPct(actual[speed]);
@@ -3433,58 +4332,51 @@ function renderMixedSpeedSpecValidationFromTarget(target) {
     const deviation = act - exp;
     const inSpec = act >= min && act <= max;
 
+    const statusBadge = inSpec
+      ? '<span class="verdict-badge verdict-pass">In spec</span>'
+      : isInformational
+        ? '<span class="verdict-badge verdict-watch">Informational mismatch</span>'
+        : '<span class="verdict-badge verdict-fail">Out of spec</span>';
+
     return `
       <tr>
         <td>${escapeHtml(speed)}</td>
         <td>${exp.toFixed(1)}%</td>
         <td>${act.toFixed(1)}%</td>
-	<td class="range-cell">${min.toFixed(1)}–${max.toFixed(1)}%</td>
-	<td class="${Math.abs(deviation) > 15 ? "deviation-bad" : "deviation-ok"}">
-	  ${deviation > 0 ? "+" : ""}${deviation.toFixed(1)}%
-	</td>
-        <td>${
-          inSpec
-            ? '<span class="verdict-badge verdict-pass">In spec</span>'
-            : '<span class="verdict-badge verdict-fail">Out of spec</span>'}
+        <td class="range-cell">${min.toFixed(1)}–${max.toFixed(1)}%</td>
+        <td class="${Math.abs(deviation) > tolerancePct ? "deviation-bad" : "deviation-ok"}">
+          ${deviation > 0 ? "+" : ""}${deviation.toFixed(1)}%
         </td>
+        <td>${statusBadge}</td>
       </tr>
     `;
   }).join("");
-  const overallOutOfSpec = speedGroups.some((speed) => {
-  const exp = toPct(expected[speed]);
-  const act = toPct(actual[speed]);
-  return act < Math.max(0, exp - tolerancePct) || act > Math.min(100, exp + tolerancePct);
-});
 
-  const specSummaryText = overallOutOfSpec
-    ? "Recovery converged, but mixed-speed distribution remains out of spec relative to expected capacity weighting."
-    : "Recovery converged and mixed-speed distribution is within the configured tolerance band.";
-  
+  const overallBadge = isInformational
+    ? '<span class="verdict-badge verdict-watch">informational</span>'
+    : overallOutOfSpec
+      ? '<span class="verdict-badge verdict-fail">out_of_spec</span>'
+      : '<span class="verdict-badge verdict-pass">in_spec</span>';
+
   return `
     <div class="evidence-card full-width">
-      <h4>Mixed-Speed ECMP Spec Validation</h4>
+      <h4>${escapeHtml(specTitle)}</h4>
       <div class="spec-validation-wrap">
         <div class="summary-grid summary-grid-3">
           <div class="summary-item">
             <div class="summary-label">Overall Status</div>
-            <div class="summary-value">
-              ${
-                overallOutOfSpec
-                  ? '<span class="verdict-badge verdict-fail">out_of_spec</span>'
-                  : '<span class="verdict-badge verdict-pass">in_spec</span>'
-              }
-            </div>
+            <div class="summary-value">${overallBadge}</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Tolerance</div>
-            <div class="summary-value">±15.0%</div>
+            <div class="summary-value">±${tolerancePct.toFixed(1)}%</div>
           </div>
           <div class="summary-item">
             <div class="summary-label">Traffic Start Mode</div>
             <div class="summary-value">all_at_once</div>
           </div>
         </div>
-  
+
         <table class="data-table compact-table spec-validation-table">
           <thead>
             <tr>
@@ -3498,7 +4390,7 @@ function renderMixedSpeedSpecValidationFromTarget(target) {
           </thead>
           <tbody>${rows}</tbody>
         </table>
-  
+
         <div class="spec-summary">${escapeHtml(specSummaryText)}</div>
       </div>
     </div>

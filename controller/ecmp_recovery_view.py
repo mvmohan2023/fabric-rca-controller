@@ -12,6 +12,7 @@ import traceback
 # ============================================================
 # Conservative enums / constants
 # ============================================================
+VERDICT_NO_EVENT_REGRESSION = "no_event_regression"
 
 ANALYSIS_COMPLETE = "complete"
 ANALYSIS_PARTIAL = "partial_data"
@@ -1417,18 +1418,21 @@ def build_ecmp_recovery_view(
                 output["summary"]["partial_count"] += 1
             if r.analysis_status == ANALYSIS_INSUFFICIENT:
                 output["summary"]["insufficient_count"] += 1
-
-            if r.recovery_verdict == VERDICT_EXPECTED:
+            if r.recovery_verdict in (
+                VERDICT_EXPECTED,
+                VERDICT_ACCEPTABLE,
+                VERDICT_NO_EVENT_REGRESSION,
+                "design_aligned",
+            ):
                 output["summary"]["expected_count"] += 1
-            elif r.recovery_verdict == VERDICT_ACCEPTABLE:
-                output["summary"]["acceptable_count"] += 1
             elif r.recovery_verdict == VERDICT_WATCH:
                 output["summary"]["watch_count"] += 1
             elif r.recovery_verdict == VERDICT_ABNORMAL:
                 output["summary"]["abnormal_count"] += 1
             elif r.recovery_verdict == VERDICT_DEFECT:
                 output["summary"]["defect_candidate_count"] += 1
-
+            else:
+                output["summary"]["insufficient_count"] += 1
 
         # ------------------------------------------------------------
         # Group-level ECMP interpretation
@@ -1443,9 +1447,29 @@ def build_ecmp_recovery_view(
 
         group_reason_codes: List[str] = []
         group_summary_text = "ECMP group behavior is mixed."
+        no_event_regression = sum(
+            1 for r in results
+            if r.recovery_verdict == VERDICT_NO_EVENT_REGRESSION
+        )
+        equal_member_mode = all(
+            getattr(r, "ecmp_expected_mode", "equal_member") == "equal_member"
+            for r in results
+        )
 
         if total > 0:
-            if misaligned == total and converged == total and unchanged == total and preexisting == total:
+            if no_event_regression == total and equal_member_mode:
+                group_reason_codes = [
+                    "group_equal_score_expected",
+                    "group_recovery_stable",
+                    "group_no_event_regression",
+                    "group_capacity_weight_informational",
+                ]
+                group_summary_text = (
+                    "ECMP distribution follows equal-score member behavior. "
+                    "Recovery converged and no event-induced ECMP regression was detected. "
+                    "Capacity-weighted 400G/100G comparison is informational only."
+                )
+            elif misaligned == total and converged == total and unchanged == total and preexisting == total:
                 group_reason_codes = [
                     "group_baseline_preexisting_skew",
                     "group_recovery_stable",

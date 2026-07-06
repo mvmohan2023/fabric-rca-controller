@@ -4,7 +4,9 @@ import json
 import os
 import statistics
 from typing import Any, Dict, List, Optional
-
+from datetime import datetime, timezone
+from pathlib import Path
+from controller.utils import atomic_write_json
 
 
 
@@ -68,6 +70,88 @@ def build_mixed_speed_spec_validation(
         "overall_status": overall_status,
     }
 
+def build_dual_distribution_validation(
+    *,
+    speed_group_members: dict,
+    capacity_expected: dict,
+    actual_group_shares: dict,
+    tolerance_pct: float = 15.0,
+) -> dict:
+    """
+    Validate ECMP distribution using two models:
+
+    1. Capacity-weighted model:
+       400G gets more share than 100G based on bandwidth.
+
+    2. Equal-member model:
+       Each ECMP member gets equal probability.
+       Example: 4x400G + 12x100G => 400G=25%, 100G=75%.
+    """
+
+    def _pct(v):
+        if v is None:
+            return 0.0
+        v = float(v)
+        return v * 100.0 if v <= 1.0 else v
+
+    total_members = sum(int(v or 0) for v in speed_group_members.values())
+
+    equal_member_expected = {}
+    if total_members > 0:
+        for speed, count in speed_group_members.items():
+            equal_member_expected[speed] = (float(count) / float(total_members)) * 100.0
+
+    def _validate(expected_map):
+        rows = []
+        overall_out = False
+
+        for speed, expected in expected_map.items():
+            expected_pct = _pct(expected)
+            actual_pct = _pct(actual_group_shares.get(speed, 0.0))
+
+            low = max(0.0, expected_pct - tolerance_pct)
+            high = min(100.0, expected_pct + tolerance_pct)
+            deviation = actual_pct - expected_pct
+            in_spec = low <= actual_pct <= high
+
+            if not in_spec:
+                overall_out = True
+
+            rows.append(
+                {
+                    "speed_group": speed,
+                    "expected_pct": expected_pct,
+                    "actual_pct": actual_pct,
+                    "allowed_min_pct": low,
+                    "allowed_max_pct": high,
+                    "deviation_pct": deviation,
+                    "status": "in_spec" if in_spec else "out_of_spec",
+                }
+            )
+
+        return {
+            "overall_status": "out_of_spec" if overall_out else "in_spec",
+            "tolerance_pct": tolerance_pct,
+            "rows": rows,
+        }
+
+    capacity_validation = _validate(capacity_expected)
+    equal_member_validation = _validate(equal_member_expected)
+
+    if capacity_validation["overall_status"] == "in_spec":
+        final = "capacity_weighted_expected"
+    elif equal_member_validation["overall_status"] == "in_spec":
+        final = "design_aligned_equal_member_dlb"
+    else:
+        final = "defect_candidate"
+
+    return {
+        "capacity_weighted_validation": capacity_validation,
+        "equal_member_validation": equal_member_validation,
+        "final_distribution_interpretation": final,
+        "equal_member_expected_group_shares": equal_member_expected,
+    }
+
 
 def _normalize_iface_name(iface: str) -> str:
     if not iface:
@@ -92,9 +176,12 @@ def _safe_int(value: Any, default: Optional[int] = 0) -> Optional[int]:
         return default
 
 
-def _load_json_file(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
+def _load_json_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load JSON file: {path}: {exc}") from exc
 
 
 def _get_node_block(report: Dict[str, Any], node: str) -> Optional[Dict[str, Any]]:
@@ -144,8 +231,10 @@ def extract_interface_counters_from_snapshot(
         metric = str(rec.get("metric", "") or rec.get("update_path", "")).strip()
         value = rec.get("value")
 
+
         iface = None
-        marker = "/interfaces/interface[name="
+
+        marker = "interfaces/interface[name="
         if marker in path:
             try:
                 start = path.index(marker) + len(marker)
@@ -153,6 +242,15 @@ def extract_interface_counters_from_snapshot(
                 iface = path[start:end].strip("'\"")
             except Exception:
                 iface = None
+
+        if not iface:
+            entity = str(rec.get("entity") or "").strip()
+            if entity and ":queue" not in entity and ":pg" not in entity:
+                iface = entity
+
+        if not iface:
+            labels = rec.get("labels") or {}
+            iface = str(labels.get("interface") or "").strip()
 
         if not iface:
             continue
@@ -790,7 +888,12 @@ def build_ecmp_recovery_report(
     default_interval_seconds: int = 10,
     traffic_start_mode: str = "all_at_once",
     ecmp_spec_tolerance_pct: float = 15.0,
+    ecmp_degraded_sample_paths=None,
+    ecmp_degraded_disabled_interfaces=None,
+    ecmp_degraded_hold_window=None,
 ) -> Dict[str, Any]:
+    tolerance_pct = float(ecmp_spec_tolerance_pct or 15.0)
+
     baseline_window = build_rate_intervals(
         sample_paths=ecmp_pre_sample_paths,
         node=node,
@@ -807,8 +910,313 @@ def build_ecmp_recovery_report(
         default_interval_seconds=default_interval_seconds,
     )
 
-    baseline_summary = summarize_window(baseline_window, interface_speeds=interface_speeds)
-    recovery_summary = summarize_window(recovery_window, interface_speeds=interface_speeds)
+    baseline_summary = summarize_window(
+        baseline_window,
+        interface_speeds=interface_speeds,
+    )
+    recovery_summary = summarize_window(
+        recovery_window,
+        interface_speeds=interface_speeds,
+    )
+
+    degraded_window = {}
+    degraded_summary = {}
+
+    if ecmp_degraded_sample_paths:
+        degraded_window = build_rate_intervals(
+            sample_paths=ecmp_degraded_sample_paths,
+            node=node,
+            interfaces_of_interest=interfaces_of_interest,
+            interface_speeds=interface_speeds,
+            default_interval_seconds=default_interval_seconds,
+        )
+        degraded_summary = summarize_window(
+            degraded_window,
+            interface_speeds=interface_speeds,
+        )
+
+    def _parse_ts(value):
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def _artifact_mtime_ts(path):
+        try:
+            return datetime.fromtimestamp(Path(path).stat().st_mtime, tz=timezone.utc)
+        except Exception:
+            return None
+
+    def _validate_degraded_sample_window(sample_paths, hold_window):
+        start = _parse_ts((hold_window or {}).get("degraded_hold_start_ts"))
+        end = _parse_ts((hold_window or {}).get("degraded_hold_end_ts"))
+
+        samples = []
+        invalid = []
+
+        for path in sample_paths or []:
+            ts = _artifact_mtime_ts(path)
+            inside = bool(start and end and ts and start <= ts <= end)
+
+            item = {
+                "path": path,
+                "timestamp": ts.isoformat() if ts else None,
+                "inside_hold_window": inside,
+            }
+            samples.append(item)
+
+            if not inside:
+                invalid.append(item)
+
+        if not sample_paths:
+            status = "missing"
+            reason = "no_degraded_sample_paths"
+        elif not start or not end:
+            status = "unknown"
+            reason = "missing_degraded_hold_window"
+        elif invalid:
+            status = "invalid"
+            reason = "degraded_samples_outside_hold_window"
+        else:
+            status = "valid"
+            reason = "degraded_samples_inside_hold_window"
+
+        return {
+            "status": status,
+            "reason": reason,
+            "hold_start": start.isoformat() if start else None,
+            "hold_end": end.isoformat() if end else None,
+            "samples": samples,
+            "invalid_samples": invalid,
+        }
+
+    degraded_sample_window_validation = _validate_degraded_sample_window(
+        ecmp_degraded_sample_paths,
+        ecmp_degraded_hold_window or {},
+    )
+
+    def _norm_iface(name):
+        return str(name or "").replace("~", ":")
+
+    def _speed_of(iface):
+        iface = _norm_iface(iface)
+        speeds = interface_speeds or {}
+
+        return (
+            speeds.get(iface)
+            or speeds.get(iface.replace(":", "~"))
+            or speeds.get(f"{node}|{iface}")
+            or speeds.get(f"{node}:{iface}")
+            or "unknown"
+        )
+    def _group_members_by_speed(members):
+        groups = {}
+        for member in members:
+            speed = str(member.get("speed") or "unknown")
+            groups.setdefault(speed, []).append(member)
+        return groups
+
+    def _norm_iface(name):
+        s = str(name or "").strip()
+
+        # Remove node prefix if present: leaf1|et-0/0/12:0 or leaf1:et-0/0/12:0
+        if "|" in s:
+            s = s.split("|", 1)[1]
+
+        # Convert encoded interface form back to Junos form
+        s = s.replace("~", ":")
+
+        return s
+
+
+    def _split_degraded_members(summary, disabled_interfaces):
+        shares = summary.get("mean_share_by_port") or {}
+
+        disabled_set = {
+            _norm_iface(x)
+            for x in (disabled_interfaces or [])
+            if x
+        }
+
+        disabled_members = []
+        survivor_members = []
+
+        for iface, share in shares.items():
+            norm = _norm_iface(iface)
+
+            try:
+                share_pct = float(share)
+            except Exception:
+                share_pct = 0.0
+
+            item = {
+                "interface": norm,
+                "speed": _speed_of(norm),
+                "share_pct": share_pct,
+            }
+
+            if norm in disabled_set:
+                disabled_members.append(item)
+            else:
+                survivor_members.append(item)
+
+        # Disabled interfaces may be absent from degraded samples because
+        # traffic is fully removed from them. Treat absence as zero share.
+        existing_disabled = {
+            _norm_iface(member.get("interface"))
+            for member in disabled_members
+        }
+
+        for disabled_iface in sorted(disabled_set):
+            if disabled_iface not in existing_disabled:
+                disabled_members.append({
+                    "interface": disabled_iface,
+                    "speed": _speed_of(disabled_iface),
+                    "share_pct": 0.0,
+                })
+
+        return disabled_members, survivor_members
+
+
+
+    debug_degraded_member_split = {
+        "input_disabled_interfaces": ecmp_degraded_disabled_interfaces or [bounced_interface],
+        "normalized_disabled_interfaces": [
+            _norm_iface(x) for x in (ecmp_degraded_disabled_interfaces or [bounced_interface])
+        ],
+        "degraded_summary_keys": list((degraded_summary.get("mean_share_by_port") or {}).keys()),
+        "degraded_summary_mean_share_by_port": degraded_summary.get("mean_share_by_port") or {},
+    }
+
+    degraded_disabled_members, degraded_survivor_members = _split_degraded_members(
+        degraded_summary,
+        ecmp_degraded_disabled_interfaces or [bounced_interface],
+    )
+
+    debug_degraded_member_split.update({
+        "disabled_members_after_split": degraded_disabled_members,
+        "survivor_members_after_split": degraded_survivor_members,
+    })
+
+    degraded_disabled_speed_groups = _group_members_by_speed(degraded_disabled_members)
+    degraded_survivor_speed_groups = _group_members_by_speed(degraded_survivor_members)
+
+    def _validate_degraded_survivors():
+        disabled_share = sum(
+            member.get("share_pct", 0.0)
+            for member in degraded_disabled_members
+        )
+        survivor_share = sum(
+            member.get("share_pct", 0.0)
+            for member in degraded_survivor_members
+        )
+
+        same_speed_spreads = {}
+
+        for speed, members in degraded_survivor_speed_groups.items():
+            shares = [member.get("share_pct", 0.0) for member in members]
+            if shares:
+                same_speed_spreads[speed] = {
+                    "member_count": len(members),
+                    "min_share_pct": round(min(shares), 3),
+                    "max_share_pct": round(max(shares), 3),
+                    "spread_pct": round(max(shares) - min(shares), 3),
+                    "members": members,
+                }
+
+        worst_spread = None
+        if same_speed_spreads:
+            worst_spread = max(
+                value["spread_pct"]
+                for value in same_speed_spreads.values()
+            )
+
+
+        disabled_leak_threshold = 0.05
+        survivor_active_threshold = 0.80
+
+        disabled_leak_ok = disabled_share <= disabled_leak_threshold
+        survivor_active_ok = survivor_share >= survivor_active_threshold
+        tolerance_fraction = tolerance_pct / 100.0
+
+        survivor_balance_ok = (
+            worst_spread is not None
+            and worst_spread <= tolerance_fraction
+        )
+        
+        has_degraded_share_data = bool(degraded_summary.get("mean_share_by_port") or {})
+
+        if not has_degraded_share_data:
+            verdict = "unknown"
+            reason = "no_degraded_share_data"
+        elif not degraded_disabled_members:
+            verdict = "unknown"
+            reason = "no_disabled_members_identified"
+        elif not degraded_survivor_members:
+            verdict = "fail"
+            reason = "no_surviving_members_carried_traffic"
+        elif not disabled_leak_ok:
+            verdict = "fail"
+            reason = "disabled_members_still_carry_traffic"
+        elif not survivor_active_ok:
+            verdict = "fail"
+            reason = "traffic_did_not_shift_to_survivors"
+        elif not survivor_balance_ok:
+            verdict = "warn"
+            reason = "survivor_members_imbalanced"
+        else:
+            verdict = "pass"
+            reason = "surviving_members_carried_degraded_traffic_within_tolerance"
+
+        return {
+            "verdict": verdict,
+            "reason": reason,
+            "disabled_share_pct": round(disabled_share, 3),
+            "survivor_share_pct": round(survivor_share, 3),
+            "worst_survivor_spread_pct": (
+                round(worst_spread, 3)
+                if worst_spread is not None
+                else None
+            ),
+            "disabled_members": degraded_disabled_members,
+            "survivor_members": degraded_survivor_members,
+            "disabled_speed_groups": degraded_disabled_speed_groups,
+            "survivor_speed_groups": degraded_survivor_speed_groups,
+            "same_speed_survivor_spreads": same_speed_spreads,
+            "tolerance_pct": tolerance_pct,
+            "tolerance_fraction": round(tolerance_fraction, 4),
+        }
+
+    degraded_survivor_validation = _validate_degraded_survivors()
+
+    if degraded_survivor_validation and degraded_survivor_validation.get("verdict") not in (None, "", "unknown"):
+        degraded_state_balance = degraded_survivor_validation.get(
+            "verdict",
+            "unknown",
+        )
+        degraded_state_reason = degraded_survivor_validation.get(
+            "reason",
+            "insufficient_data",
+        )
+
+    elif degraded_sample_window_validation.get("status") != "valid":
+        degraded_state_balance = "unknown"
+        degraded_state_reason = degraded_sample_window_validation.get(
+            "reason",
+            "degraded_sample_window_not_valid",
+        )
+
+    else:
+        degraded_state_balance = degraded_survivor_validation.get(
+            "verdict",
+            "unknown",
+        )
+        degraded_state_reason = degraded_survivor_validation.get(
+            "reason",
+            "insufficient_data",
+    )
 
     classification = classify_ecmp_behavior(
         baseline_summary=baseline_summary,
@@ -819,9 +1227,62 @@ def build_ecmp_recovery_report(
     mixed_speed_validation = build_mixed_speed_spec_validation(
         recovery_summary=recovery_summary,
         interface_speeds=interface_speeds,
-        tolerance_pct=ecmp_spec_tolerance_pct,
+        tolerance_pct=tolerance_pct,
         traffic_start_mode=traffic_start_mode,
     )
+
+    speed_group_members = {}
+    recovery_same_speed_group_view = (
+        recovery_summary.get("same_speed_group_view")
+        or recovery_summary.get("same_speed_groups")
+        or []
+    )
+
+    for group in recovery_same_speed_group_view or []:
+        speed = (
+            group.get("speed_group")
+            or group.get("speed")
+            or group.get("group_name")
+            or group.get("name")
+        )
+        members = group.get("members") or []
+        if speed:
+            speed_group_members[str(speed)] = len(members)
+
+    expected_group_shares = locals().get("expected_group_shares", {})
+    recovery_group_shares = locals().get("recovery_group_shares", {})
+
+    dual_validation = build_dual_distribution_validation(
+        speed_group_members=speed_group_members,
+        capacity_expected=expected_group_shares or {},
+        actual_group_shares=recovery_group_shares or {},
+        tolerance_pct=tolerance_pct,
+    )
+
+    final_interp = dual_validation.get("final_distribution_interpretation")
+
+    if final_interp == "design_aligned_equal_member_dlb":
+        classification["recovery_verdict"] = "design_aligned"
+        classification["analysis_status"] = "complete"
+        classification["confidence"] = "medium"
+
+        reason_codes = classification.get("reason_codes") or []
+        reason_codes.extend(
+            [
+                "capacity_weighted_distribution_not_met",
+                "equal_member_distribution_matched",
+                "dlb_design_aligned_under_equal_quality",
+            ]
+        )
+        classification["reason_codes"] = list(dict.fromkeys(reason_codes))
+
+    elif final_interp == "capacity_weighted_expected":
+        classification["recovery_verdict"] = "expected"
+        classification["analysis_status"] = "complete"
+
+        reason_codes = classification.get("reason_codes") or []
+        reason_codes.append("capacity_weighted_distribution_matched")
+        classification["reason_codes"] = list(dict.fromkeys(reason_codes))
 
     return {
         "run_id": run_id,
@@ -831,12 +1292,25 @@ def build_ecmp_recovery_report(
         "interface_speeds": interface_speeds or {},
         "baseline_window": baseline_window,
         "recovery_window": recovery_window,
+        "degraded_window": degraded_window,
         "baseline_summary": baseline_summary,
         "recovery_summary": recovery_summary,
+        "degraded_summary": degraded_summary,
+        "degraded_paths": ecmp_degraded_sample_paths or [],
+        "degraded_sample_window_validation": degraded_sample_window_validation,
+        "degraded_survivor_validation": degraded_survivor_validation,
+        "debug_degraded_member_split": debug_degraded_member_split,
+        "degraded_state_balance": degraded_state_balance,
+        "degraded_state_reason": degraded_state_reason,
         "analysis": classification,
         "mixed_speed_spec_validation": mixed_speed_validation,
+        "dual_distribution_validation": dual_validation,
+        "capacity_weighted_validation": dual_validation.get("capacity_weighted_validation", {}),
+        "equal_member_validation": dual_validation.get("equal_member_validation", {}),
+        "final_distribution_interpretation": dual_validation.get(
+            "final_distribution_interpretation"
+        ),
     }
-
 
 def write_ecmp_recovery_report(
     *,
@@ -844,6 +1318,8 @@ def write_ecmp_recovery_report(
     report: Dict[str, Any],
 ) -> str:
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump(report, fh, indent=2, sort_keys=False)
+    #with open(out_path, "w", encoding="utf-8") as fh:
+    #    json.dump(report, fh, indent=2, sort_keys=False)
+    atomic_write_json(out_path, report, indent=2, sort_keys=False)
+
     return out_path

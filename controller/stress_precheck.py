@@ -1,7 +1,7 @@
 import json
 import sys
 from pathlib import Path
-
+from controller.utils import atomic_write_json
 
 VALIDATION_REPORT_FILE = Path("/root/fabric-controller/artifacts/validation/fabric_validation_report.json")
 OUTPUT_DIR = Path("/root/fabric-controller/artifacts/precheck")
@@ -135,8 +135,9 @@ def build_precheck_report(validation_report):
 
 
 def write_json_report(report, outfile: Path):
-    with open(outfile, "w") as f:
-        json.dump(report, f, indent=2)
+    #with open(outfile, "w") as f:
+    #    json.dump(report, f, indent=2)
+    atomic_write_json(outfile, report, indent=2)
 
 
 def write_text_report(report, outfile: Path):
