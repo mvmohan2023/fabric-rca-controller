@@ -22,6 +22,12 @@ from controller.run_rca_case import (
     evaluate_pre_event_cleanliness,
 )
 
+from controller.ecmp_phase_sampler import (
+    collect_ecmp_phase_snapshot,
+    encode_iface_for_snapshot,
+)
+from controller.utils import atomic_write_json
+
 BASE_DIR = Path("/root/fabric-controller")
 ARTIFACTS_DIR = BASE_DIR / "artifacts"
 OUTPUT_DIR = ARTIFACTS_DIR / "orchestrator"
@@ -60,7 +66,7 @@ def parse_args():
     parser.add_argument(
         "--mode",
         default="noop",
-        choices=["noop", "interface_bounce", "bgp_clear"],
+        choices=["noop", "interface_bounce", "interface_hold_restore", "interface_flap", "bgp_clear"],
         help="Stress mode to execute.",
     )
     parser.add_argument(
@@ -167,14 +173,54 @@ def parse_args():
         default=str(TOPOLOGY_FILE),
         help="Topology file passed to telemetry collection for pre-event baseline validation.",
     )
+
+    parser.add_argument(
+        "--degraded-hold-seconds",
+        type=int,
+        default=300,
+        help="How long to keep interfaces down before restore.",
+    )
+
+    parser.add_argument(
+        "--restore-after-degraded-validation",
+        action="store_true",
+        help="Restore interfaces after degraded hold validation.",
+    )
+
+    parser.add_argument("--degraded-ecmp-sample-count", type=int, default=3)
+    parser.add_argument("--degraded-ecmp-sample-interval", type=int, default=30)
+    parser.add_argument(
+        "--degraded-sample-start-delay",
+        type=int,
+        default=60,
+        help="Wait time after interface disable before degraded ECMP sampling starts.",
+    )
+
+    parser.add_argument(
+        "--degraded-ecmp-analysis-targets",
+        default="",
+        help="Comma-separated node:interface list to collect during degraded hold.",
+    )
+
+    parser.add_argument("--flap-repeat", type=int, default=5)
+    parser.add_argument("--flap-down-seconds", type=int, default=10)
+    parser.add_argument("--flap-up-wait-seconds", type=int, default=60)
     return parser.parse_args()
 
 
 def run_cmd(cmd, step_name):
     print(f"\n[STEP] {step_name}")
     print(f"  CMD: {' '.join(cmd)}")
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "step": name,
+            "status": "fail",
+            "returncode": 124,
+            "stdout": exc.stdout or "",
+            "stderr": exc.stderr or f"timeout after 300s: {' '.join(cmd)}",
+        }
 
     if result.stdout:
         print(result.stdout, end="")
@@ -415,39 +461,27 @@ def run_noop_action(settle_seconds):
         "details": f"No-op action executed. Slept for {settle_seconds} seconds.",
     }
 
-
-def run_interface_bounce(node, interface, inventory, settle_seconds):
-    print(f"\n[STRESS] mode=interface_bounce node={node} interface={interface}")
-
+def run_interface_admin_action(node, interface, inventory, action, step_name):
     if not node:
-        details = "Missing required argument: --node"
-        print(f"  ERROR: {details}")
-        return {
-            "stress_mode": "interface_bounce",
+        return None, {
             "status": "fail",
-            "details": details,
+            "details": "Missing required argument: --node",
             "target": {"node": node, "interface": interface},
         }
 
     if not interface:
-        details = "Missing required argument: --interface"
-        print(f"  ERROR: {details}")
-        return {
-            "stress_mode": "interface_bounce",
+        return None, {
             "status": "fail",
-            "details": details,
+            "details": "Missing required argument: --interface",
             "target": {"node": node, "interface": interface},
         }
 
     try:
         conn = get_node_connection(node, inventory)
     except Exception as exc:
-        details = str(exc)
-        print(f"  ERROR: {details}")
-        return {
-            "stress_mode": "interface_bounce",
+        return None, {
             "status": "fail",
-            "details": details,
+            "details": str(exc),
             "target": {"node": node, "interface": interface},
         }
 
@@ -455,21 +489,163 @@ def run_interface_bounce(node, interface, inventory, settle_seconds):
     user = conn["user"]
     password = conn["password"]
 
-    down_cmd = (
-        f'cli -c "configure; '
-        f'set interfaces {interface} disable; '
-        f'commit and-quit"'
-    )
-    up_cmd = (
-        f'cli -c "configure; '
-        f'delete interfaces {interface} disable; '
-        f'commit and-quit"'
+    if action == "disable":
+        cmd = (
+            f'cli -c "configure; '
+            f'set interfaces {interface} disable; '
+            f'commit and-quit"'
+        )
+    elif action == "enable":
+        cmd = (
+            f'cli -c "configure; '
+            f'delete interfaces {interface} disable; '
+            f'commit and-quit"'
+        )
+    else:
+        return conn, {
+            "status": "fail",
+            "details": f"Unsupported interface admin action: {action}",
+            "target": {"node": node, "interface": interface, "host": host},
+        }
+
+    step = run_remote_command(
+        host,
+        user,
+        password,
+        cmd,
+        f"{step_name} {action} {node}:{interface}",
     )
 
-    step1 = run_remote_command(
-        host, user, password, down_cmd,
-        f"interface_bounce disable {node}:{interface}"
+    return conn, step
+
+
+def run_interface_flap(
+    node,
+    interface,
+    inventory,
+    down_seconds=10,
+    up_wait_seconds=60,
+    repeat=5,
+):
+    print(
+        f"\n[STRESS] mode=interface_flap node={node} interface={interface} "
+        f"repeat={repeat} down_seconds={down_seconds} up_wait_seconds={up_wait_seconds}"
     )
+
+    steps = []
+    host = None
+
+    repeat = max(1, int(repeat or 1))
+    down_seconds = max(0, int(down_seconds or 0))
+    up_wait_seconds = max(0, int(up_wait_seconds or 0))
+
+    for idx in range(repeat):
+        iteration = idx + 1
+
+        conn, step_down = run_interface_admin_action(
+            node=node,
+            interface=interface,
+            inventory=inventory,
+            action="disable",
+            step_name=f"interface_flap iteration={iteration}",
+        )
+
+        if step_down["status"] == "fail" and "returncode" not in step_down:
+            print(f"  ERROR: {step_down['details']}")
+            return {
+                "stress_mode": "interface_flap",
+                "status": "fail",
+                "details": step_down["details"],
+                "target": step_down.get("target", {"node": node, "interface": interface}),
+                "steps": steps,
+            }
+
+        host = conn["host"] if conn else host
+        steps.append(step_down)
+
+        if step_down["returncode"] != 0:
+            return {
+                "stress_mode": "interface_flap",
+                "status": "fail",
+                "details": f"Failed to disable interface {node}:{interface} on iteration {iteration}",
+                "target": {"node": node, "interface": interface, "host": host},
+                "iteration": iteration,
+                "steps": steps,
+            }
+
+        print(f"  Iteration {iteration}/{repeat}: waiting {down_seconds}s while disabled")
+        time.sleep(down_seconds)
+
+        conn, step_up = run_interface_admin_action(
+            node=node,
+            interface=interface,
+            inventory=inventory,
+            action="enable",
+            step_name=f"interface_flap iteration={iteration}",
+        )
+
+        if step_up["status"] == "fail" and "returncode" not in step_up:
+            print(f"  ERROR: {step_up['details']}")
+            return {
+                "stress_mode": "interface_flap",
+                "status": "fail",
+                "details": step_up["details"],
+                "target": step_up.get("target", {"node": node, "interface": interface}),
+                "iteration": iteration,
+                "steps": steps,
+            }
+
+        host = conn["host"] if conn else host
+        steps.append(step_up)
+
+        if step_up["returncode"] != 0:
+            return {
+                "stress_mode": "interface_flap",
+                "status": "fail",
+                "details": f"Failed to re-enable interface {node}:{interface} on iteration {iteration}",
+                "target": {"node": node, "interface": interface, "host": host},
+                "iteration": iteration,
+                "steps": steps,
+            }
+
+        print(f"  Iteration {iteration}/{repeat}: waiting {up_wait_seconds}s for recovery")
+        time.sleep(up_wait_seconds)
+
+    return {
+        "stress_mode": "interface_flap",
+        "status": "pass",
+        "details": (
+            f"Interface flap completed on {node}:{interface}; "
+            f"repeat={repeat}, down_seconds={down_seconds}, up_wait_seconds={up_wait_seconds}."
+        ),
+        "target": {"node": node, "interface": interface, "host": host},
+        "repeat": repeat,
+        "down_seconds": down_seconds,
+        "up_wait_seconds": up_wait_seconds,
+        "steps": steps,
+    }
+
+def run_interface_bounce(node, interface, inventory, settle_seconds):
+    print(f"\n[STRESS] mode=interface_bounce node={node} interface={interface}")
+
+    conn, step1 = run_interface_admin_action(
+        node=node,
+        interface=interface,
+        inventory=inventory,
+        action="disable",
+        step_name="interface_bounce",
+    )
+
+    if step1["status"] == "fail" and "returncode" not in step1:
+        print(f"  ERROR: {step1['details']}")
+        return {
+            "stress_mode": "interface_bounce",
+            "status": "fail",
+            "details": step1["details"],
+            "target": step1.get("target", {"node": node, "interface": interface}),
+            "steps": [],
+        }
+
     if step1["returncode"] != 0:
         return {
             "stress_mode": "interface_bounce",
@@ -478,7 +654,7 @@ def run_interface_bounce(node, interface, inventory, settle_seconds):
             "target": {
                 "node": node,
                 "interface": interface,
-                "host": host,
+                "host": conn["host"] if conn else None,
             },
             "steps": [step1],
         }
@@ -486,10 +662,24 @@ def run_interface_bounce(node, interface, inventory, settle_seconds):
     print(f"  Waiting {settle_seconds} seconds before re-enable...")
     time.sleep(settle_seconds)
 
-    step2 = run_remote_command(
-        host, user, password, up_cmd,
-        f"interface_bounce enable {node}:{interface}"
+    conn, step2 = run_interface_admin_action(
+        node=node,
+        interface=interface,
+        inventory=inventory,
+        action="enable",
+        step_name="interface_bounce",
     )
+
+    if step2["status"] == "fail" and "returncode" not in step2:
+        print(f"  ERROR: {step2['details']}")
+        return {
+            "stress_mode": "interface_bounce",
+            "status": "fail",
+            "details": step2["details"],
+            "target": step2.get("target", {"node": node, "interface": interface}),
+            "steps": [step1],
+        }
+
     if step2["returncode"] != 0:
         return {
             "stress_mode": "interface_bounce",
@@ -498,7 +688,7 @@ def run_interface_bounce(node, interface, inventory, settle_seconds):
             "target": {
                 "node": node,
                 "interface": interface,
-                "host": host,
+                "host": conn["host"] if conn else None,
             },
             "steps": [step1, step2],
         }
@@ -513,10 +703,269 @@ def run_interface_bounce(node, interface, inventory, settle_seconds):
         "target": {
             "node": node,
             "interface": interface,
-            "host": host,
+            "host": conn["host"] if conn else None,
         },
         "steps": [step1, step2],
     }
+
+
+def run_interface_hold_restore(
+    node,
+    interface,
+    inventory,
+    settle_seconds,
+    degraded_hold_seconds,
+    restore_after_degraded_validation,
+    degraded_ecmp_sample_count: int = 3,
+    degraded_ecmp_sample_interval: int = 30,
+    degraded_sample_start_delay: int = 60,
+    degraded_ecmp_analysis_targets=None,
+    run_id=None,
+    phase_profile: str = "hotspot_congestion_qmon_phase",
+    topology: str = "artifacts/topology/topology_full.json",
+    timeout: int = 30,
+):
+
+    def _parse_degraded_sample_targets(value):
+        targets = []
+
+        if isinstance(value, list):
+            return value
+
+        for item in str(value or "").split(","):
+            item = item.strip()
+            if not item or ":" not in item:
+                continue
+
+            node_name, iface_name = item.split(":", 1)
+            targets.append({
+                "node": node_name.strip(),
+                "interface": iface_name.strip().replace("~", ":"),
+            })
+
+        return targets
+
+    print(f"\n[STRESS] mode=interface_hold_restore node={node} interface={interface}")
+
+    steps = []
+    degraded_samples = []
+    degraded_sample_paths = []
+
+    degraded_hold_start_ts = None
+    degraded_hold_end_ts = None
+    restore_start_ts = None
+
+    # ------------------------------------------------------------------
+    # Step 1: Disable selected member
+    # ------------------------------------------------------------------
+    conn, step1 = run_interface_admin_action(
+        node=node,
+        interface=interface,
+        inventory=inventory,
+        action="disable",
+        step_name="interface_hold_restore",
+    )
+
+    if step1["status"] == "fail" and "returncode" not in step1:
+        print(f"  ERROR: {step1['details']}")
+        return {
+            "stress_mode": "interface_hold_restore",
+            "status": "fail",
+            "details": step1["details"],
+            "target": step1.get("target", {"node": node, "interface": interface}),
+        }
+
+    host = conn["host"] if conn else None
+    steps.append(step1)
+
+    if step1["returncode"] != 0:
+        return {
+            "stress_mode": "interface_hold_restore",
+            "status": "fail",
+            "details": f"Failed to disable interface {node}:{interface}",
+            "target": {
+                "node": node,
+                "interface": interface,
+                "host": host,
+            },
+            "degraded_state": {
+                "enabled": True,
+                "hold_seconds": degraded_hold_seconds,
+                "restore_after_degraded_validation": restore_after_degraded_validation,
+            },
+            "steps": steps,
+            "degraded_ecmp_samples": degraded_samples,
+        }
+
+    # ------------------------------------------------------------------
+    # Step 2: True degraded HOLD window
+    # ------------------------------------------------------------------
+    if degraded_sample_start_delay > 0:
+        time.sleep(degraded_sample_start_delay)
+
+    sample_count = max(1, int(degraded_ecmp_sample_count or 1))
+    sample_interval = max(1, int(degraded_ecmp_sample_interval or 30))
+
+    degraded_hold_start_ts = datetime.now(timezone.utc).isoformat()
+
+    print(
+        f"  Holding degraded state for {degraded_hold_seconds} seconds "
+        f"(sample_count={sample_count}, sample_interval={sample_interval}s)"
+    )
+
+    sample_targets = _parse_degraded_sample_targets(degraded_ecmp_analysis_targets)
+
+    if not sample_targets:
+        sample_targets = [{
+            "node": node,
+            "interface": interface,
+        }]
+
+    fault_encoded_iface = encode_iface_for_snapshot(interface)
+
+    for idx in range(sample_count):
+        sample_ts = datetime.now(timezone.utc).isoformat()
+
+        snapshot_name = (
+            f"ecmp_degraded_fault_{node}_{fault_encoded_iface}_{idx + 1}"
+        )
+
+        sample_path = collect_ecmp_phase_snapshot(
+            run_id=run_id,
+            snapshot_name=snapshot_name,
+            profile=phase_profile,
+            node=node,
+            interface=interface,
+            topology=topology,
+            timeout=timeout,
+        )
+
+        sample = {
+            "sample": f"degraded_ecmp_sample_{idx + 1}",
+            "node": node,
+            "interface": interface,
+            "timestamp": sample_ts,
+            "phase": "degraded_hold",
+            "inside_hold_window": True,
+            "path": sample_path,
+        }
+
+        degraded_samples.append(sample)
+        degraded_sample_paths.append(sample_path)
+
+        print(
+            f"  [DEGRADED-ECMP] sample={idx + 1}/{sample_count} "
+            f"fault={node}:{interface} "
+            f"ts={sample_ts} path={sample_path}"
+        )
+
+        if idx < sample_count - 1:
+            time.sleep(sample_interval)
+
+    elapsed_sample_time = (sample_count - 1) * sample_interval
+    remaining_hold = max(0, int(degraded_hold_seconds or 0) - elapsed_sample_time)
+
+    if remaining_hold > 0:
+        print(f"  Remaining degraded hold sleep={remaining_hold}s")
+        time.sleep(remaining_hold)
+
+    degraded_hold_end_ts = datetime.now(timezone.utc).isoformat()
+
+    # ------------------------------------------------------------------
+    # Step 3: Restore selected member
+    # ------------------------------------------------------------------
+    if restore_after_degraded_validation:
+        restore_start_ts = datetime.now(timezone.utc).isoformat()
+
+        conn, step2 = run_interface_admin_action(
+            node=node,
+            interface=interface,
+            inventory=inventory,
+            action="enable",
+            step_name="interface_hold_restore",
+        )
+        steps.append(step2)
+
+        if step2["status"] == "fail" and "returncode" not in step2:
+            print(f"  ERROR: {step2['details']}")
+            return {
+                "stress_mode": "interface_hold_restore",
+                "status": "fail",
+                "details": step2["details"],
+                "target": step2.get("target", {"node": node, "interface": interface}),
+                "degraded_state": {
+                    "enabled": True,
+                    "hold_seconds": degraded_hold_seconds,
+                    "restore_after_degraded_validation": restore_after_degraded_validation,
+                },
+                "phase_timestamps": {
+                    "degraded_hold_start_ts": degraded_hold_start_ts,
+                    "degraded_hold_end_ts": degraded_hold_end_ts,
+                    "restore_start_ts": restore_start_ts,
+                },
+                "steps": steps,
+                "degraded_ecmp_samples": degraded_samples,
+                "ecmp_degraded_sample_paths": degraded_sample_paths,
+            }
+
+        if step2["returncode"] != 0:
+            return {
+                "stress_mode": "interface_hold_restore",
+                "status": "fail",
+                "details": f"Failed to re-enable interface {node}:{interface}",
+                "target": {
+                    "node": node,
+                    "interface": interface,
+                    "host": host,
+                },
+                "degraded_state": {
+                    "enabled": True,
+                    "hold_seconds": degraded_hold_seconds,
+                    "restore_after_degraded_validation": restore_after_degraded_validation,
+                },
+                "phase_timestamps": {
+                    "degraded_hold_start_ts": degraded_hold_start_ts,
+                    "degraded_hold_end_ts": degraded_hold_end_ts,
+                    "restore_start_ts": restore_start_ts,
+                },
+                "steps": steps,
+                "degraded_ecmp_samples": degraded_samples,
+                "ecmp_degraded_sample_paths": degraded_sample_paths,
+            }
+
+        print(f"  Waiting {settle_seconds} seconds for fabric recovery...")
+        time.sleep(max(0, int(settle_seconds or 0)))
+    else:
+        print("  Restore skipped by request.")
+
+    return {
+        "stress_mode": "interface_hold_restore",
+        "status": "pass",
+        "details": (
+            f"Interface degraded hold completed on {node}:{interface}; "
+            f"hold_seconds={degraded_hold_seconds}, "
+            f"restore={restore_after_degraded_validation}."
+        ),
+        "target": {
+            "node": node,
+            "interface": interface,
+            "host": host,
+        },
+        "degraded_state": {
+            "enabled": True,
+            "hold_seconds": degraded_hold_seconds,
+            "restore_after_degraded_validation": restore_after_degraded_validation,
+        },
+        "phase_timestamps": {
+            "degraded_hold_start_ts": degraded_hold_start_ts,
+            "degraded_hold_end_ts": degraded_hold_end_ts,
+            "restore_start_ts": restore_start_ts,
+        },
+        "steps": steps,
+        "degraded_ecmp_samples": degraded_samples,
+        "ecmp_degraded_sample_paths": degraded_sample_paths,
+    }
+
 
 
 def run_bgp_clear(node, inventory, settle_seconds):
@@ -593,7 +1042,7 @@ def parse_targets(mode, targets_arg, node=None, interface=None):
         for item in raw_items:
             if mode == "bgp_clear":
                 targets.append({"node": item})
-            elif mode == "interface_bounce":
+            elif mode in ("interface_bounce", "interface_hold_restore", "interface_flap"):
                 if "|" not in item:
                     raise ValueError(
                         f"Invalid interface_bounce target '{item}'. Expected format node|interface"
@@ -616,7 +1065,7 @@ def parse_targets(mode, targets_arg, node=None, interface=None):
             if not node:
                 raise ValueError("For bgp_clear provide --node or --targets")
             targets.append({"node": node})
-        elif mode == "interface_bounce":
+        elif mode in ("interface_bounce", "interface_hold_restore", "interface_flap"):
             if not node or not interface:
                 raise ValueError("For interface_bounce provide --node/--interface or --targets")
             targets.append({
@@ -627,7 +1076,25 @@ def parse_targets(mode, targets_arg, node=None, interface=None):
     return targets
 
 
-def run_single_stress_target(stress_mode, target, settle_seconds, inventory):
+def run_single_stress_target(
+    stress_mode,
+    target,
+    settle_seconds,
+    inventory,
+    degraded_hold_seconds=300,
+    restore_after_degraded_validation=False,
+    degraded_ecmp_sample_count: int = 3,
+    degraded_ecmp_sample_interval: int = 30,
+    degraded_sample_start_delay: int = 60,
+    degraded_ecmp_analysis_targets=None,
+    run_id=None,
+    phase_profile: str = "hotspot_congestion_qmon_phase",
+    topology: str = "artifacts/topology/topology_full.json",
+    timeout: int = 30,
+    flap_repeat=5,
+    flap_down_seconds=10,
+    flap_up_wait_seconds=60,
+):
     if stress_mode == "noop":
         return run_noop_action(settle_seconds)
 
@@ -645,7 +1112,32 @@ def run_single_stress_target(stress_mode, target, settle_seconds, inventory):
             inventory=inventory,
             settle_seconds=settle_seconds,
         )
-
+    if stress_mode == "interface_flap":
+        return run_interface_flap(
+            node=target.get("node"),
+            interface=target.get("interface"),
+            inventory=inventory,
+            down_seconds=flap_down_seconds,
+            up_wait_seconds=flap_up_wait_seconds,
+            repeat=flap_repeat,
+        )
+    if stress_mode == "interface_hold_restore":
+        return run_interface_hold_restore(
+            node=target["node"],
+            interface=target["interface"],
+            inventory=inventory,
+            settle_seconds=settle_seconds,
+            degraded_hold_seconds=degraded_hold_seconds,
+            restore_after_degraded_validation=restore_after_degraded_validation,
+            degraded_ecmp_sample_count=degraded_ecmp_sample_count,
+            degraded_ecmp_sample_interval=degraded_ecmp_sample_interval,
+            degraded_sample_start_delay=degraded_sample_start_delay,
+            degraded_ecmp_analysis_targets=degraded_ecmp_analysis_targets,
+            run_id=run_id,
+            phase_profile=phase_profile,
+            topology=topology,
+            timeout=timeout,
+        )
     return {
         "stress_mode": stress_mode,
         "status": "fail",
@@ -654,7 +1146,26 @@ def run_single_stress_target(stress_mode, target, settle_seconds, inventory):
     }
 
 
-def run_parallel_stress_actions(stress_mode, targets, settle_seconds, parallel, inventory):
+def run_parallel_stress_actions(
+    stress_mode,
+    targets,
+    settle_seconds,
+    parallel,
+    inventory,
+    degraded_hold_seconds=300,
+    restore_after_degraded_validation=False,
+    degraded_ecmp_sample_count: int = 3,
+    degraded_ecmp_sample_interval: int = 30,
+    degraded_sample_start_delay: int = 60,
+    degraded_ecmp_analysis_targets=None,
+    run_id=None,
+    phase_profile: str = "hotspot_congestion_qmon_phase",
+    topology: str = "artifacts/topology/topology_full.json",
+    timeout: int = 30,
+    flap_repeat=5,
+    flap_down_seconds=10,
+    flap_up_wait_seconds=60,
+):
     print(f"\n[STRESS-GROUP] mode={stress_mode} parallel={parallel} targets={len(targets)}")
 
     if stress_mode == "noop":
@@ -680,6 +1191,20 @@ def run_parallel_stress_actions(stress_mode, targets, settle_seconds, parallel, 
                 target,
                 settle_seconds,
                 inventory,
+                degraded_hold_seconds,
+                restore_after_degraded_validation,
+                degraded_ecmp_sample_count,
+                degraded_ecmp_sample_interval,
+                degraded_sample_start_delay,
+                degraded_ecmp_analysis_targets,
+                run_id,
+                phase_profile,
+                topology,
+                timeout,
+                flap_repeat,
+                flap_down_seconds,
+                flap_up_wait_seconds,
+
             ): target
             for target in targets
         }
@@ -711,7 +1236,28 @@ def run_parallel_stress_actions(stress_mode, targets, settle_seconds, parallel, 
     }
 
 
-def run_stress_action(stress_mode, settle_seconds, inventory, node=None, interface=None, targets_arg=None, parallel=1):
+def run_stress_action(
+    stress_mode,
+    settle_seconds,
+    inventory,
+    node=None,
+    interface=None,
+    targets_arg=None,
+    parallel=1,
+    degraded_hold_seconds=300,
+    restore_after_degraded_validation=True,
+    degraded_ecmp_sample_count: int = 3,
+    degraded_ecmp_sample_interval: int = 30,
+    degraded_sample_start_delay: int = 60,
+    degraded_ecmp_analysis_targets=None,
+    run_id = None,
+    phase_profile: str = "hotspot_congestion_qmon_phase",
+    topology: str = "artifacts/topology/topology_full.json",
+    timeout: int = 30,
+    flap_repeat=5,
+    flap_down_seconds=10,
+    flap_up_wait_seconds=60,
+):
     try:
         targets = parse_targets(
             mode=stress_mode,
@@ -733,6 +1279,19 @@ def run_stress_action(stress_mode, settle_seconds, inventory, node=None, interfa
         settle_seconds=settle_seconds,
         parallel=parallel,
         inventory=inventory,
+        degraded_hold_seconds=degraded_hold_seconds,
+        restore_after_degraded_validation=restore_after_degraded_validation,
+        degraded_ecmp_sample_count=degraded_ecmp_sample_count,
+        degraded_ecmp_sample_interval=degraded_ecmp_sample_interval,
+        degraded_sample_start_delay = degraded_sample_start_delay,
+        degraded_ecmp_analysis_targets=degraded_ecmp_analysis_targets,
+        run_id=run_id,
+        phase_profile=phase_profile,
+        topology=topology,
+        timeout=timeout,
+        flap_repeat=flap_repeat,
+        flap_down_seconds=flap_down_seconds,
+        flap_up_wait_seconds=flap_up_wait_seconds,
     )
 
 
@@ -1135,8 +1694,9 @@ def build_final_campaign_report(run_id, archive_root, pre_steps, pre_report, ite
 
 
 def write_json_report(report, outfile: Path):
-    with open(outfile, "w") as f:
-        json.dump(report, f, indent=2)
+    #with open(outfile, "w") as f:
+    #    json.dump(report, f, indent=2)
+    atomic_write_json(outfile, report, indent=2)
 
 
 def write_text_report(report, outfile: Path):
@@ -1279,8 +1839,9 @@ def write_summary(
     }
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(data, f, indent=2, sort_keys=False)
+    #with open(out_path, "w") as f:
+    #    json.dump(data, f, indent=2, sort_keys=False)
+    atomic_write_json(out_path, data, indent=2, sort_keys=False)
 
 def main():
     args = parse_args()
@@ -1447,6 +2008,19 @@ def main():
                                 interface=args.interface,
                                 targets_arg=args.targets,
                                 parallel=args.parallel,
+                                degraded_hold_seconds=args.degraded_hold_seconds,
+                                restore_after_degraded_validation=args.restore_after_degraded_validation,
+                                degraded_ecmp_sample_count=args.degraded_ecmp_sample_count,
+                                degraded_ecmp_sample_interval=args.degraded_ecmp_sample_interval,
+                                degraded_sample_start_delay=args.degraded_sample_start_delay,
+                                degraded_ecmp_analysis_targets=args.degraded_ecmp_analysis_targets,
+                                run_id=run_id,
+                                phase_profile=getattr(args, "phase_profile", None) or "hotspot_congestion_qmon_phase",
+                                topology=getattr(args, "baseline_topology", None) or "artifacts/topology/topology_full.json",
+                                timeout=int(getattr(args, "baseline_timeout", 30) or 30),
+                                flap_repeat=args.flap_repeat,
+                                flap_down_seconds=args.flap_down_seconds,
+                                flap_up_wait_seconds=args.flap_up_wait_seconds,
                             )
 
                             if stress_result["status"] != "pass":
@@ -1482,8 +2056,9 @@ def main():
                                 for item in iter_snapshot_files:
                                     print(f"  - {item}")
 
-                            with open(iter_dir / "iteration_report.json", "w") as f:
-                                json.dump(iter_report, f, indent=2)
+                            #with open(iter_dir / "iteration_report.json", "w") as f:
+                            #    json.dump(iter_report, f, indent=2)
+                            atomic_write_json(iter_dir / "iteration_report.json", iter_report, indent=2)
 
                             if iter_report["status"] != "pass" and args.stop_on_failure:
                                 print(f"\n[STOP] iteration {iteration} failed and --stop-on-failure is set")
