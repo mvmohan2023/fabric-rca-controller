@@ -66,7 +66,15 @@ def parse_args():
     parser.add_argument(
         "--mode",
         default="noop",
-        choices=["noop", "interface_bounce", "interface_hold_restore", "interface_flap", "bgp_clear"],
+        choices=[
+            "noop",
+            "interface_bounce",
+            "interface_hold_restore",
+            "interface_flap",
+            "interface_shutdown",
+            "interface_restore",
+            "bgp_clear",
+        ],
         help="Stress mode to execute.",
     )
     parser.add_argument(
@@ -518,6 +526,79 @@ def run_interface_admin_action(node, interface, inventory, action, step_name):
 
     return conn, step
 
+
+def run_interface_shutdown(node, interface, inventory):
+    print(f"\n[STRESS] mode=interface_shutdown node={node} interface={interface}")
+
+    conn, step = run_interface_admin_action(
+        node=node,
+        interface=interface,
+        inventory=inventory,
+        action="disable",
+        step_name="interface_shutdown",
+    )
+
+    if step.get("status") == "fail" and "returncode" not in step:
+        return {
+            "stress_mode": "interface_shutdown",
+            "status": "fail",
+            "details": step["details"],
+            "target": step.get("target", {"node": node, "interface": interface}),
+            "steps": [],
+        }
+
+    host = conn["host"] if conn else None
+
+    return {
+        "stress_mode": "interface_shutdown",
+        "status": "pass" if step.get("returncode") == 0 else "fail",
+        "details": (
+            f"Interface shutdown completed on {node}:{interface}."
+            if step.get("returncode") == 0
+            else f"Failed to shutdown interface {node}:{interface}."
+        ),
+        "target": {"node": node, "interface": interface, "host": host},
+        "steps": [step],
+    }
+
+
+def run_interface_restore(node, interface, inventory, settle_seconds=10):
+    print(f"\n[STRESS] mode=interface_restore node={node} interface={interface}")
+
+    conn, step = run_interface_admin_action(
+        node=node,
+        interface=interface,
+        inventory=inventory,
+        action="enable",
+        step_name="interface_restore",
+    )
+
+    if step.get("status") == "fail" and "returncode" not in step:
+        return {
+            "stress_mode": "interface_restore",
+            "status": "fail",
+            "details": step["details"],
+            "target": step.get("target", {"node": node, "interface": interface}),
+            "steps": [],
+        }
+
+    host = conn["host"] if conn else None
+
+    if step.get("returncode") == 0:
+        print(f"  Waiting {settle_seconds} seconds for fabric recovery...")
+        time.sleep(max(0, int(settle_seconds or 0)))
+
+    return {
+        "stress_mode": "interface_restore",
+        "status": "pass" if step.get("returncode") == 0 else "fail",
+        "details": (
+            f"Interface restore completed on {node}:{interface}."
+            if step.get("returncode") == 0
+            else f"Failed to restore interface {node}:{interface}."
+        ),
+        "target": {"node": node, "interface": interface, "host": host},
+        "steps": [step],
+    }
 
 def run_interface_flap(
     node,
@@ -1033,6 +1114,14 @@ def run_bgp_clear(node, inventory, settle_seconds):
 def parse_targets(mode, targets_arg, node=None, interface=None):
     targets = []
 
+    interface_modes = (
+        "interface_bounce",
+        "interface_hold_restore",
+        "interface_flap",
+        "interface_shutdown",
+        "interface_restore",
+    )
+
     if mode == "noop":
         return [{}]
 
@@ -1042,18 +1131,19 @@ def parse_targets(mode, targets_arg, node=None, interface=None):
         for item in raw_items:
             if mode == "bgp_clear":
                 targets.append({"node": item})
-            elif mode in ("interface_bounce", "interface_hold_restore", "interface_flap"):
+            elif mode in interface_modes:
                 if "|" not in item:
                     raise ValueError(
-                        f"Invalid interface_bounce target '{item}'. Expected format node|interface"
+                        f"Invalid {mode} target '{item}'. Expected format node|interface"
                     )
+
                 node_name, intf = item.split("|", 1)
                 node_name = node_name.strip()
                 intf = intf.strip()
 
                 if not node_name or not intf:
                     raise ValueError(
-                        f"Invalid interface_bounce target '{item}'. Expected non-empty node|interface"
+                        f"Invalid {mode} target '{item}'. Expected non-empty node|interface"
                     )
 
                 targets.append({
@@ -1065,9 +1155,9 @@ def parse_targets(mode, targets_arg, node=None, interface=None):
             if not node:
                 raise ValueError("For bgp_clear provide --node or --targets")
             targets.append({"node": node})
-        elif mode in ("interface_bounce", "interface_hold_restore", "interface_flap"):
+        elif mode in interface_modes:
             if not node or not interface:
-                raise ValueError("For interface_bounce provide --node/--interface or --targets")
+                raise ValueError(f"For {mode} provide --node/--interface or --targets")
             targets.append({
                 "node": node,
                 "interface": interface,
@@ -1120,6 +1210,20 @@ def run_single_stress_target(
             down_seconds=flap_down_seconds,
             up_wait_seconds=flap_up_wait_seconds,
             repeat=flap_repeat,
+        )
+    if stress_mode == "interface_shutdown":
+        return run_interface_shutdown(
+            node=target.get("node"),
+            interface=target.get("interface"),
+            inventory=inventory,
+        )
+
+    if stress_mode == "interface_restore":
+        return run_interface_restore(
+            node=target.get("node"),
+            interface=target.get("interface"),
+            inventory=inventory,
+            settle_seconds=settle_seconds,
         )
     if stress_mode == "interface_hold_restore":
         return run_interface_hold_restore(

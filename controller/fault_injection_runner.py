@@ -43,6 +43,16 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "rca": "Any detected hotspot reflects steady-state behavior rather than event-induced churn.",
         },
     },
+    "single_interface_flap": {
+        "description": "Repeatedly flap one interface and validate fabric recovery.",
+        "stress_mode": "interface_flap",
+        "target_scope": "single_interface",
+        "expected_behavior": {
+            "event_execution": "interface flapped successfully",
+            "fabric_recovery": "fabric returns to stable state after flap",
+            "rca": "RCA report generated with interface/traffic/telemetry evidence",
+        },
+    },
     "single_interface_bounce": {
         "stress_mode": "interface_bounce",
         "description": "Bounce one explicit or auto-selected fabric interface.",
@@ -451,10 +461,12 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
 SUITES: Dict[str, List[str]] = {
     "smoke": [
         "single_interface_bounce",
+        "single_interface_flap",
     ],
 
     "production_basic": [
         "single_interface_bounce",
+        "single_interface_flap",
         "leaf_fabric_parallel_bounce",
         "spine_fabric_parallel_bounce",
         # promote here after validation
@@ -464,6 +476,7 @@ SUITES: Dict[str, List[str]] = {
 
     "production_extended": [
         "single_interface_bounce",
+        "single_interface_flap",
         "leaf_fabric_parallel_bounce",
         "spine_fabric_parallel_bounce",
         "selected_nodes_parallel_bounce",
@@ -475,6 +488,7 @@ SUITES: Dict[str, List[str]] = {
 
     "master_release": [
         "single_interface_bounce",
+        "single_interface_flap",
         "leaf_fabric_parallel_bounce",
         "spine_fabric_parallel_bounce",
         "selected_nodes_parallel_bounce",
@@ -489,6 +503,7 @@ SUITES: Dict[str, List[str]] = {
     ],
         "production_basic": [
         "single_interface_bounce",
+        "single_interface_flap",
         "leaf_fabric_parallel_bounce",
         "spine_fabric_parallel_bounce",
         "random_single_fabric_port_bounce",
@@ -497,6 +512,7 @@ SUITES: Dict[str, List[str]] = {
 
     "production_extended": [
         "single_interface_bounce",
+        "single_interface_flap",
         "leaf_fabric_parallel_bounce",
         "spine_fabric_parallel_bounce",
         "selected_nodes_parallel_bounce",
@@ -1169,7 +1185,7 @@ def resolve_targets_for_scenario(
     # Explicit targets override topology resolution
     if explicit_targets:
         targets = parse_explicit_targets(explicit_targets)
-        if scenario_name == "single_interface_bounce" and len(targets) != 1:
+        if scenario_name in ( "single_interface_bounce" or "single_interface_flap") and len(targets) != 1:
             raise ValueError("single_interface_bounce requires exactly one target when using --targets")
         return targets
 
@@ -1327,6 +1343,9 @@ def run_stress_event(
     degraded_ecmp_sample_interval: int = 30,
     degraded_sample_start_delay: int = 60,
     degraded_ecmp_analysis_targets=None,
+    flap_repeat=5,
+    flap_down_seconds=10,
+    flap_up_wait_seconds=60,
 ) -> str:
     stress_mode = SCENARIOS[scenario_name]["stress_mode"]
 
@@ -1409,6 +1428,14 @@ def run_stress_event(
 
     if degraded_ecmp_analysis_targets:
         cmd.extend(["--degraded-ecmp-analysis-targets", str(degraded_ecmp_analysis_targets)])
+
+    if flap_repeat:
+        cmd.extend(["--flap-repeat", str(flap_repeat)])
+    if flap_down_seconds:
+        cmd.extend(["--flap-down-seconds", str(flap_down_seconds)])
+    if flap_up_wait_seconds:
+        cmd.extend(["--flap-up-wait-seconds", str(flap_up_wait_seconds)])
+
 
     run_subprocess(cmd, "STRESS_ORCHESTRATOR")
 
@@ -1525,6 +1552,7 @@ def run_rca_case(
 
     if enable_port_stats:
         cmd.append("--enable-port-stats")
+
 
     run_subprocess(cmd, "RCA_CASE")
 
@@ -2751,6 +2779,9 @@ def run_single_scenario(
     degraded_ecmp_sample_interval: int = 30,
     degraded_sample_start_delay: int = 60,
     degraded_ecmp_analysis_targets=None,
+    flap_repeat=5,
+    flap_down_seconds=10,
+    flap_up_wait_seconds=60,
 ) -> Dict[str, Any]:
     scenario = SCENARIOS[scenario_name]
 
@@ -2824,10 +2855,10 @@ def run_single_scenario(
     progress.info(f"targets_arg={resolved_target_artifacts['targets_arg']}")
 
     progress.info(f"resolved_target_count={len(targets_resolved)}")
-    if scenario_name == "single_interface_bounce" and not (node and interface) and not targets:
+    if scenario_name in ("single_interface_bounce", "single_interface_flap") and not (node and interface) and not targets:
         progress.info("single_interface_bounce_target_mode=auto")
         print("[RESOLVE] single_interface_bounce using auto-selected target")
-    elif scenario_name == "single_interface_bounce":
+    elif scenario_name in ("single_interface_bounce", "single_interface_flap"):
         progress.info("single_interface_bounce_target_mode=manual")
 
     print(f"\n[RESOLVE] target count = {len(targets_resolved)}")
@@ -2852,7 +2883,7 @@ def run_single_scenario(
     rca_node = node
     rca_interface = interface
 
-    if scenario_name == "single_interface_bounce" and targets_resolved:
+    if scenario_name in ("single_interface_bounce", "single_interface_flap") and targets_resolved:
         first_target = targets_resolved[0]
         rca_node = first_target.get("node")
         rca_interface = first_target.get("interface")
@@ -2886,6 +2917,9 @@ def run_single_scenario(
         degraded_ecmp_sample_interval=degraded_ecmp_sample_interval,
         degraded_sample_start_delay=degraded_sample_start_delay,
         degraded_ecmp_analysis_targets=degraded_ecmp_analysis_targets,
+        flap_repeat=flap_repeat,
+        flap_down_seconds=flap_down_seconds,
+        flap_up_wait_seconds=flap_up_wait_seconds,
     )
     if scenario_name == "ecmp_member_degraded_hold_restore":
         degraded_event_artifact = BASE_DIR / "artifacts" / "campaigns" / rca_run_id / "degraded_member_hold_event.json"
@@ -3417,8 +3451,8 @@ def run_suite(
         print(f"[SUITE] Scenario {index}/{len(scenarios)} : {scenario_name}")
         print("#" * 88)
 
-        scenario_node = node if scenario_name == "single_interface_bounce" else None
-        scenario_interface = interface if scenario_name == "single_interface_bounce" else None
+        scenario_node = node if scenario_name in ("single_interface_bounce", "single_interface_flap") else None
+        scenario_interface = interface if scenario_name in ("single_interface_bounce", "single_interface_flap") else None
 
         try:
             scenario_rca_run_id = build_rca_run_id_for_suite(
@@ -3618,11 +3652,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--node",
-        help="Explicit node for single_interface_bounce (optional if auto target selection is used)",
+        help="Explicit node for single-interface sceanario (optional if auto target selection is used)",
     )
     parser.add_argument(
         "--interface",
-        help="Explicit interface for single_interface_bounce (optional if auto target selection is used)",
+        help="Explicit interface for single-interface sceanario  (optional if auto target selection is used)",
     )
     parser.add_argument(
         "--targets",
@@ -3773,6 +3807,27 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated node:interface list to collect during degraded hold.",
     )
 
+    parser.add_argument(
+        "--flap-repeat",
+        type=int,
+        default=5,
+        help="Number of interface flap iterations.",
+    )
+
+    parser.add_argument(
+        "--flap-down-seconds",
+        type=int,
+        default=10,
+        help="Seconds to keep interface down during each flap.",
+    )
+
+    parser.add_argument(
+        "--flap-up-wait-seconds",
+        type=int,
+        default=60,
+        help="Recovery wait after interface is re-enabled.",
+    )
+
     args = parser.parse_args()
     normalize_phase_timing_args(args)
 
@@ -3888,6 +3943,9 @@ def main() -> int:
                 degraded_ecmp_sample_interval=args.degraded_ecmp_sample_interval,
                 degraded_sample_start_delay=args.degraded_sample_start_delay,
                 degraded_ecmp_analysis_targets=args.degraded_ecmp_analysis_targets,
+                flap_repeat=args.flap_repeat,
+                flap_down_seconds=args.flap_down_seconds,
+                flap_up_wait_seconds=args.flap_up_wait_seconds,
 
             )
         
