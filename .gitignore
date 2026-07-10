@@ -1,13 +1,30 @@
-.venv/
-venv/
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+
+# Local backups
+*.tar.gz
+
+# Python cache
 __pycache__/
 *.pyc
-*.pyo
-.env
-.env.*
+
+# Virtual environment
+.venv/
+
+# IDE
 .vscode/
 .idea/
-.DS_Store
+
+# Generated artifacts
 artifacts/
-*.tar.gz
-*.tar.gz
+
+# Runtime outputs
+*.log
+
+# Local runtime files
+t.log
+ui_server.log
