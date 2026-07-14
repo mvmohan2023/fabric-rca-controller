@@ -1,0 +1,246 @@
+"""Common domain models for Fabric Validation Platform.
+
+These models are additive and are not intended to replace existing JSON
+schemas immediately. They provide a normalized internal representation that
+can be introduced incrementally while preserving existing external behavior.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional
+
+from controller.core.constants import (
+    RecoveryMode,
+    ScenarioMaturity,
+    STATUS_PENDING,
+)
+
+
+JsonDict = Dict[str, Any]
+
+
+class SerializableModel:
+    """Mixin providing dictionary serialization for core domain models."""
+
+    def to_dict(self) -> JsonDict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]):
+        if not isinstance(data, Mapping):
+            raise TypeError(
+                f"{cls.__name__}.from_dict expected a mapping, "
+                f"received {type(data).__name__}"
+            )
+        return cls(**dict(data))
+
+
+@dataclass
+class Target(SerializableModel):
+    """A device, interface, process, or other entity under validation."""
+
+    node: str
+    interface: Optional[str] = None
+    role: Optional[str] = None
+    speed: Optional[str] = None
+    metadata: JsonDict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.node = str(self.node or "").strip()
+        if not self.node:
+            raise ValueError("Target.node must be non-empty")
+
+        if self.interface is not None:
+            self.interface = str(self.interface).strip() or None
+
+    def legacy_dict(self) -> JsonDict:
+        """Return the minimal target format used by existing reports."""
+
+        result: JsonDict = {"node": self.node}
+        if self.interface:
+            result["interface"] = self.interface
+        return result
+
+
+@dataclass
+class ScenarioDefinition(SerializableModel):
+    """Metadata describing one executable FVP validation scenario."""
+
+    scenario_id: str
+    name: str
+    family: str
+    description: str
+    stress_mode: str
+
+    display_name: Optional[str] = None
+    supports_parallel: bool = False
+    supports_iterations: bool = True
+    validation_required: bool = True
+    rca_required: bool = True
+    recovery_mode: str = RecoveryMode.AUTOMATIC.value
+    maturity: str = ScenarioMaturity.PLANNED.value
+    metadata: JsonDict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        required = {
+            "scenario_id": self.scenario_id,
+            "name": self.name,
+            "family": self.family,
+            "description": self.description,
+            "stress_mode": self.stress_mode,
+        }
+
+        for field_name, value in required.items():
+            normalized = str(value or "").strip()
+            if not normalized:
+                raise ValueError(
+                    f"ScenarioDefinition.{field_name} must be non-empty"
+                )
+            setattr(self, field_name, normalized)
+
+        if self.display_name is None:
+            self.display_name = self.name.replace("_", " ").title()
+
+
+@dataclass
+class StressResult(SerializableModel):
+    """Normalized result returned by a stress-action handler."""
+
+    stress_mode: str
+    status: str
+    details: str
+
+    target: Optional[Target] = None
+    steps: List[JsonDict] = field(default_factory=list)
+    artifacts: List[str] = field(default_factory=list)
+    metrics: JsonDict = field(default_factory=dict)
+    metadata: JsonDict = field(default_factory=dict)
+
+    def to_dict(self) -> JsonDict:
+        result = asdict(self)
+        if self.target is not None:
+            result["target"] = self.target.to_dict()
+        return result
+
+    def to_legacy_dict(self) -> JsonDict:
+        """Return a structure compatible with current stress reports."""
+
+        result: JsonDict = {
+            "stress_mode": self.stress_mode,
+            "status": self.status,
+            "details": self.details,
+            "steps": list(self.steps),
+        }
+
+        if self.target is not None:
+            result["target"] = self.target.legacy_dict()
+
+        if self.artifacts:
+            result["artifacts"] = list(self.artifacts)
+
+        if self.metrics:
+            result["metrics"] = dict(self.metrics)
+
+        result.update(self.metadata)
+        return result
+
+
+@dataclass
+class ValidationResult(SerializableModel):
+    """Normalized expected-versus-observed validation outcome."""
+
+    status: str = STATUS_PENDING
+    event_ok: Optional[bool] = None
+    impact_ok: Optional[bool] = None
+    recovery_ok: Optional[bool] = None
+    traffic_ok: Optional[bool] = None
+    platform_ok: Optional[bool] = None
+    telemetry_ok: Optional[bool] = None
+    messages: List[str] = field(default_factory=list)
+    evidence: List[str] = field(default_factory=list)
+    metadata: JsonDict = field(default_factory=dict)
+
+
+@dataclass
+class RcaFinding(SerializableModel):
+    """One engineering finding generated by the RCA framework."""
+
+    category: str
+    summary: str
+    confidence: Optional[float] = None
+    evidence: List[str] = field(default_factory=list)
+    metadata: JsonDict = field(default_factory=dict)
+
+
+@dataclass
+class RcaResult(SerializableModel):
+    """Normalized root-cause analysis result."""
+
+    status: str = STATUS_PENDING
+    primary_root_cause: Optional[str] = None
+    confidence: Optional[float] = None
+    findings: List[RcaFinding] = field(default_factory=list)
+    recommendations: List[str] = field(default_factory=list)
+    artifacts: List[str] = field(default_factory=list)
+    metadata: JsonDict = field(default_factory=dict)
+
+    def to_dict(self) -> JsonDict:
+        result = asdict(self)
+        result["findings"] = [finding.to_dict() for finding in self.findings]
+        return result
+
+
+@dataclass
+class CampaignResult(SerializableModel):
+    """Normalized top-level campaign result."""
+
+    run_id: str
+    overall_status: str = STATUS_PENDING
+
+    scenario_name: Optional[str] = None
+    iterations: List[JsonDict] = field(default_factory=list)
+    validation: Optional[ValidationResult] = None
+    rca: Optional[RcaResult] = None
+    artifacts: List[str] = field(default_factory=list)
+    metadata: JsonDict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.run_id = str(self.run_id or "").strip()
+        if not self.run_id:
+            raise ValueError("CampaignResult.run_id must be non-empty")
+
+    def to_dict(self) -> JsonDict:
+        result = asdict(self)
+
+        if self.validation is not None:
+            result["validation"] = self.validation.to_dict()
+
+        if self.rca is not None:
+            result["rca"] = self.rca.to_dict()
+
+        return result
+
+
+@dataclass
+class ArtifactReference(SerializableModel):
+    """Metadata describing an artifact generated during execution."""
+
+    name: str
+    path: str
+    category: str
+
+    producer: Optional[str] = None
+    phase: Optional[str] = None
+    content_type: Optional[str] = None
+    metadata: JsonDict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not str(self.name or "").strip():
+            raise ValueError("ArtifactReference.name must be non-empty")
+
+        if not str(self.path or "").strip():
+            raise ValueError("ArtifactReference.path must be non-empty")
+
+        self.path = str(Path(self.path))
