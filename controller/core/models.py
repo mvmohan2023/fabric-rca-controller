@@ -244,3 +244,43 @@ class ArtifactReference(SerializableModel):
             raise ValueError("ArtifactReference.path must be non-empty")
 
         self.path = str(Path(self.path))
+
+
+@dataclass
+class StressActionContext(SerializableModel):
+    """Normalized input passed to every registered stress-action adapter."""
+
+    stress_mode: str
+    target: JsonDict
+    inventory: JsonDict
+    settle_seconds: int = 0
+    options: JsonDict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.stress_mode = str(self.stress_mode or "").strip()
+
+        if not self.stress_mode:
+            raise ValueError(
+                "StressActionContext.stress_mode must be non-empty"
+            )
+
+        if not isinstance(self.target, dict):
+            raise TypeError(
+                "StressActionContext.target must be a dictionary"
+            )
+
+        if not isinstance(self.inventory, dict):
+            raise TypeError(
+                "StressActionContext.inventory must be a dictionary"
+            )
+
+        self.settle_seconds = max(
+            0,
+            int(self.settle_seconds or 0),
+        )
+
+    def option(self, name: str, default: Any = None) -> Any:
+        """Return one scenario-specific option."""
+
+        return self.options.get(name, default)
+

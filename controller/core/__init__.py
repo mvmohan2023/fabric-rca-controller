@@ -36,6 +36,18 @@ from controller.core.registry import (
     validation_registry,
 )
 
+from controller.core.models import (
+    ArtifactReference,
+    CampaignResult,
+    RcaFinding,
+    RcaResult,
+    ScenarioDefinition,
+    StressActionContext,
+    StressResult,
+    Target,
+    ValidationResult,
+)
+
 from controller.core.artifact_manager import ArtifactManager
 from controller.core.execution_context import ExecutionContext
 from controller.core.report_manager import ReportManager
@@ -70,4 +82,5 @@ __all__ = [
     "ArtifactManager",
     "ExecutionContext",
     "ReportManager",
+    "StressActionContext",
 ]

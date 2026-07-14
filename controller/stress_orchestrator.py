@@ -26,6 +26,12 @@ from controller.ecmp_phase_sampler import (
     collect_ecmp_phase_snapshot,
     encode_iface_for_snapshot,
 )
+
+from controller.core import (
+    StressActionContext,
+    stress_action_registry,
+)
+
 from controller.utils import atomic_write_json
 
 BASE_DIR = Path("/root/fabric-controller")
@@ -1111,6 +1117,135 @@ def run_bgp_clear(node, inventory, settle_seconds):
     }
 
 
+
+# ---------------------------------------------------------------------------
+# Registry-compatible stress action adapters
+#
+# Each adapter accepts one StressActionContext and calls the existing,
+# production-tested handler without changing the handler or result schema.
+# ---------------------------------------------------------------------------
+
+def _execute_noop(context: StressActionContext):
+    return run_noop_action(
+        context.settle_seconds,
+    )
+
+
+def _execute_bgp_clear(context: StressActionContext):
+    return run_bgp_clear(
+        node=context.target.get("node"),
+        inventory=context.inventory,
+        settle_seconds=context.settle_seconds,
+    )
+
+
+def _execute_interface_bounce(context: StressActionContext):
+    return run_interface_bounce(
+        node=context.target.get("node"),
+        interface=context.target.get("interface"),
+        inventory=context.inventory,
+        settle_seconds=context.settle_seconds,
+    )
+
+
+def _execute_interface_flap(context: StressActionContext):
+    return run_interface_flap(
+        node=context.target.get("node"),
+        interface=context.target.get("interface"),
+        inventory=context.inventory,
+        down_seconds=context.option("flap_down_seconds", 10),
+        up_wait_seconds=context.option(
+            "flap_up_wait_seconds",
+            context.settle_seconds,
+        ),
+        repeat=context.option("flap_repeat", 5),
+    )
+
+
+def _execute_interface_shutdown(context: StressActionContext):
+    return run_interface_shutdown(
+        node=context.target.get("node"),
+        interface=context.target.get("interface"),
+        inventory=context.inventory,
+    )
+
+
+def _execute_interface_restore(context: StressActionContext):
+    return run_interface_restore(
+        node=context.target.get("node"),
+        interface=context.target.get("interface"),
+        inventory=context.inventory,
+        settle_seconds=context.settle_seconds,
+    )
+
+
+def _execute_interface_hold_restore(context: StressActionContext):
+    return run_interface_hold_restore(
+        node=context.target["node"],
+        interface=context.target["interface"],
+        inventory=context.inventory,
+        settle_seconds=context.settle_seconds,
+        degraded_hold_seconds=context.option(
+            "degraded_hold_seconds",
+            300,
+        ),
+        restore_after_degraded_validation=context.option(
+            "restore_after_degraded_validation",
+            False,
+        ),
+        degraded_ecmp_sample_count=context.option(
+            "degraded_ecmp_sample_count",
+            3,
+        ),
+        degraded_ecmp_sample_interval=context.option(
+            "degraded_ecmp_sample_interval",
+            30,
+        ),
+        degraded_sample_start_delay=context.option(
+            "degraded_sample_start_delay",
+            60,
+        ),
+        degraded_ecmp_analysis_targets=context.option(
+            "degraded_ecmp_analysis_targets",
+        ),
+        run_id=context.option("run_id"),
+        phase_profile=context.option(
+            "phase_profile",
+            "hotspot_congestion_qmon_phase",
+        ),
+        topology=context.option(
+            "topology",
+            "artifacts/topology/topology_full.json",
+        ),
+        timeout=context.option("timeout", 30),
+    )
+
+def register_builtin_stress_actions() -> None:
+    """Register built-in stress handlers.
+
+    replace=True keeps this function safe if the module is reloaded during
+    development or testing.
+    """
+
+    builtin_actions = {
+        "noop": _execute_noop,
+        "bgp_clear": _execute_bgp_clear,
+        "interface_bounce": _execute_interface_bounce,
+        "interface_flap": _execute_interface_flap,
+        "interface_shutdown": _execute_interface_shutdown,
+        "interface_restore": _execute_interface_restore,
+        "interface_hold_restore": _execute_interface_hold_restore,
+    }
+
+    for mode, handler in builtin_actions.items():
+        stress_action_registry.register(
+            mode,
+            handler,
+            replace=True,
+        )
+
+register_builtin_stress_actions()
+
 def parse_targets(mode, targets_arg, node=None, interface=None):
     targets = []
 
@@ -1185,69 +1320,58 @@ def run_single_stress_target(
     flap_down_seconds=10,
     flap_up_wait_seconds=60,
 ):
-    if stress_mode == "noop":
-        return run_noop_action(settle_seconds)
+    context = StressActionContext(
+        stress_mode=stress_mode,
+        target=dict(target or {}),
+        inventory=inventory,
+        settle_seconds=settle_seconds,
+        options={
+            "degraded_hold_seconds": degraded_hold_seconds,
+            "restore_after_degraded_validation":
+                restore_after_degraded_validation,
+            "degraded_ecmp_sample_count":
+                degraded_ecmp_sample_count,
+            "degraded_ecmp_sample_interval":
+                degraded_ecmp_sample_interval,
+            "degraded_sample_start_delay":
+                degraded_sample_start_delay,
+            "degraded_ecmp_analysis_targets":
+                degraded_ecmp_analysis_targets,
+            "run_id": run_id,
+            "phase_profile": phase_profile,
+            "topology": topology,
+            "timeout": timeout,
+            "flap_repeat": flap_repeat,
+            "flap_down_seconds": flap_down_seconds,
+            "flap_up_wait_seconds": flap_up_wait_seconds,
+        },
+    )
 
-    if stress_mode == "bgp_clear":
-        return run_bgp_clear(
-            node=target.get("node"),
-            inventory=inventory,
-            settle_seconds=settle_seconds,
-        )
+    handler = stress_action_registry.get(stress_mode)
 
-    if stress_mode == "interface_bounce":
-        return run_interface_bounce(
-            node=target.get("node"),
-            interface=target.get("interface"),
-            inventory=inventory,
-            settle_seconds=settle_seconds,
-        )
-    if stress_mode == "interface_flap":
-        return run_interface_flap(
-            node=target.get("node"),
-            interface=target.get("interface"),
-            inventory=inventory,
-            down_seconds=flap_down_seconds,
-            up_wait_seconds=flap_up_wait_seconds,
-            repeat=flap_repeat,
-        )
-    if stress_mode == "interface_shutdown":
-        return run_interface_shutdown(
-            node=target.get("node"),
-            interface=target.get("interface"),
-            inventory=inventory,
-        )
+    if handler is None:
+        return {
+            "stress_mode": stress_mode,
+            "status": "fail",
+            "details": f"Unsupported stress mode: {stress_mode}",
+            "target": target,
+        }
 
-    if stress_mode == "interface_restore":
-        return run_interface_restore(
-            node=target.get("node"),
-            interface=target.get("interface"),
-            inventory=inventory,
-            settle_seconds=settle_seconds,
-        )
-    if stress_mode == "interface_hold_restore":
-        return run_interface_hold_restore(
-            node=target["node"],
-            interface=target["interface"],
-            inventory=inventory,
-            settle_seconds=settle_seconds,
-            degraded_hold_seconds=degraded_hold_seconds,
-            restore_after_degraded_validation=restore_after_degraded_validation,
-            degraded_ecmp_sample_count=degraded_ecmp_sample_count,
-            degraded_ecmp_sample_interval=degraded_ecmp_sample_interval,
-            degraded_sample_start_delay=degraded_sample_start_delay,
-            degraded_ecmp_analysis_targets=degraded_ecmp_analysis_targets,
-            run_id=run_id,
-            phase_profile=phase_profile,
-            topology=topology,
-            timeout=timeout,
-        )
-    return {
-        "stress_mode": stress_mode,
-        "status": "fail",
-        "details": f"Unsupported stress mode: {stress_mode}",
-        "target": target,
-    }
+    result = handler(context)
+
+    if not isinstance(result, dict):
+        return {
+            "stress_mode": stress_mode,
+            "status": "fail",
+            "details": (
+                f"Stress handler for mode '{stress_mode}' returned "
+                f"{type(result).__name__}; expected dict"
+            ),
+            "target": target,
+        }
+
+    return result
+
 
 
 def run_parallel_stress_actions(
@@ -2208,6 +2332,10 @@ def main():
 
     sys.exit(0 if final_report["overall_status"] == "pass" else 1)
 
+def initialize_stress_framework():
+    """Initialize built-in stress action registry."""
+
 
 if __name__ == "__main__":
+    initialize_stress_framework()
     main()
