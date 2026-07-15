@@ -64,6 +64,78 @@ def first_non_empty(*values):
             return value
     return None
 
+def parse_target_spec(spec):
+    """Parse one generic FVP target specification.
+
+    Supported syntax:
+
+        interface|<node>|<interface>
+        bgp_neighbor|<node>|<peer-ip>
+        process|<node>|<process-name>
+
+    The returned dictionary remains intentionally extensible.
+    """
+
+    value = str(spec or "").strip()
+
+    if not value:
+        raise ValueError("Target specification must be non-empty")
+
+    parts = [part.strip() for part in value.split("|", 2)]
+
+    if len(parts) != 3:
+        raise ValueError(
+            f"Invalid target specification '{value}'. "
+            "Expected format target_type|node|resource"
+        )
+
+    target_type, node, resource = parts
+
+    if not target_type:
+        raise ValueError(
+            f"Invalid target specification '{value}': "
+            "target type must be non-empty"
+        )
+
+    if not node:
+        raise ValueError(
+            f"Invalid target specification '{value}': "
+            "node must be non-empty"
+        )
+
+    if not resource:
+        raise ValueError(
+            f"Invalid target specification '{value}': "
+            "resource must be non-empty"
+        )
+
+    if target_type == "interface":
+        return {
+            "target_type": "interface",
+            "node": node,
+            "interface": resource,
+        }
+
+    if target_type == "bgp_neighbor":
+        return {
+            "target_type": "bgp_neighbor",
+            "node": node,
+            "peer_ip": resource,
+        }
+
+    if target_type == "process":
+        return {
+            "target_type": "process",
+            "node": node,
+            "process": resource,
+        }
+
+    return {
+        "target_type": target_type,
+        "node": node,
+        "resource": resource,
+    }
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -214,6 +286,18 @@ def parse_args():
         "--degraded-ecmp-analysis-targets",
         default="",
         help="Comma-separated node:interface list to collect during degraded hold.",
+    )
+
+    parser.add_argument(
+        "--target",
+        action="append",
+        default=None,
+        help=(
+            "Generic target specification. May be supplied multiple times. "
+            "Format: target_type|node|resource. Examples: "
+            "interface|leaf7|et-6/0/0 or "
+            "bgp_neighbor|leaf7|2001::1:0:17:0"
+        ),
     )
 
     parser.add_argument("--flap-repeat", type=int, default=5)
@@ -1246,9 +1330,27 @@ def register_builtin_stress_actions() -> None:
 
 register_builtin_stress_actions()
 
-def parse_targets(mode, targets_arg, node=None, interface=None):
+def parse_targets(
+    mode,
+    targets_arg,
+    node=None,
+    interface=None,
+    target_specs=None,
+):
     targets = []
+    if target_specs:
+        parsed_targets = [
+            parse_target_spec(spec)
+            for spec in target_specs
+            if str(spec or "").strip()
+        ]
 
+        if not parsed_targets:
+            raise ValueError(
+                "At least one valid --target specification is required"
+            )
+
+        return parsed_targets
     interface_modes = (
         "interface_bounce",
         "interface_hold_restore",
@@ -1301,6 +1403,31 @@ def parse_targets(mode, targets_arg, node=None, interface=None):
     return targets
 
 
+def validate_target_for_stress_mode(stress_mode, target):
+    """Validate that the resolved target is compatible with the action."""
+
+    target_type = target.get("target_type")
+
+    expected_types = {
+        "interface_bounce": "interface",
+        "interface_hold_restore": "interface",
+        "interface_flap": "interface",
+        "interface_shutdown": "interface",
+        "interface_restore": "interface",
+        "bgp_neighbor_shutdown": "bgp_neighbor",
+        "bgp_neighbor_restore": "bgp_neighbor",
+        "bgp_neighbor_flap": "bgp_neighbor",
+    }
+
+    expected_type = expected_types.get(stress_mode)
+
+    # Legacy targets do not contain target_type. Preserve compatibility.
+    if expected_type and target_type and target_type != expected_type:
+        raise ValueError(
+            f"Stress mode '{stress_mode}' requires target type "
+            f"'{expected_type}', received '{target_type}'"
+        )
+
 def run_single_stress_target(
     stress_mode,
     target,
@@ -1320,6 +1447,8 @@ def run_single_stress_target(
     flap_down_seconds=10,
     flap_up_wait_seconds=60,
 ):
+
+    validate_target_for_stress_mode(stress_mode, target)
     context = StressActionContext(
         stress_mode=stress_mode,
         target=dict(target or {}),
@@ -1463,7 +1592,6 @@ def run_parallel_stress_actions(
         "results": results,
     }
 
-
 def run_stress_action(
     stress_mode,
     settle_seconds,
@@ -1471,6 +1599,7 @@ def run_stress_action(
     node=None,
     interface=None,
     targets_arg=None,
+    target_specs=None,
     parallel=1,
     degraded_hold_seconds=300,
     restore_after_degraded_validation=True,
@@ -1492,7 +1621,9 @@ def run_stress_action(
             targets_arg=targets_arg,
             node=node,
             interface=interface,
+            target_specs=target_specs,
         )
+        
     except Exception as exc:
         return {
             "stress_mode": stress_mode,
@@ -2235,6 +2366,7 @@ def main():
                                 node=args.node,
                                 interface=args.interface,
                                 targets_arg=args.targets,
+                                target_specs=args.target,
                                 parallel=args.parallel,
                                 degraded_hold_seconds=args.degraded_hold_seconds,
                                 restore_after_degraded_validation=args.restore_after_degraded_validation,

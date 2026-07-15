@@ -125,6 +125,7 @@ class Registry(Generic[T]):
 
 
 scenario_registry: Registry[object] = Registry("scenario")
+target_registry: Registry[object] = Registry("target")
 stress_action_registry: Registry[object] = Registry("stress_action")
 validation_registry: Registry[object] = Registry("validation")
 rca_registry: Registry[object] = Registry("rca")
