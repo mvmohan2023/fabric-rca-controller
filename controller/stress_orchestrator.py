@@ -47,8 +47,12 @@ from controller.stress_actions.interface import (
     run_interface_bounce,
 )
 
+
 from controller.stress_actions.bgp import (
     run_bgp_clear,
+    run_bgp_neighbor_flap,
+    run_bgp_neighbor_restore,
+    run_bgp_neighbor_shutdown,
 )
 
 from controller.utils import atomic_write_json
@@ -469,6 +473,52 @@ def _execute_bgp_clear(context: StressActionContext):
         settle_seconds=context.settle_seconds,
     )
 
+def _execute_bgp_neighbor_shutdown(
+    context: StressActionContext,
+):
+    return run_bgp_neighbor_shutdown(
+        node=context.target.get("node"),
+        peer_ip=context.target.get("peer_ip"),
+        inventory=context.inventory,
+        bgp_group=context.target.get("bgp_group"),
+    )
+
+
+def _execute_bgp_neighbor_restore(
+    context: StressActionContext,
+):
+    return run_bgp_neighbor_restore(
+        node=context.target.get("node"),
+        peer_ip=context.target.get("peer_ip"),
+        inventory=context.inventory,
+        settle_seconds=context.settle_seconds,
+        bgp_group=context.target.get("bgp_group"),
+    )
+
+
+def _execute_bgp_neighbor_flap(
+    context: StressActionContext,
+):
+    return run_bgp_neighbor_flap(
+        node=context.target.get("node"),
+        peer_ip=context.target.get("peer_ip"),
+        inventory=context.inventory,
+        down_seconds=context.option(
+            "bgp_flap_down_seconds",
+            10,
+        ),
+        up_wait_seconds=context.option(
+            "bgp_flap_up_wait_seconds",
+            context.settle_seconds,
+        ),
+        repeat=context.option(
+            "bgp_flap_repeat",
+            1,
+        ),
+        bgp_group=context.target.get("bgp_group"),
+    )
+
+
 
 def _execute_interface_bounce(context: StressActionContext):
     return run_interface_bounce(
@@ -566,6 +616,9 @@ def register_builtin_stress_actions() -> None:
         "interface_shutdown": _execute_interface_shutdown,
         "interface_restore": _execute_interface_restore,
         "interface_hold_restore": _execute_interface_hold_restore,
+        "bgp_neighbor_shutdown": _execute_bgp_neighbor_shutdown,
+        "bgp_neighbor_restore": _execute_bgp_neighbor_restore,
+        "bgp_neighbor_flap": _execute_bgp_neighbor_flap,
     }
 
     for mode, handler in builtin_actions.items():
