@@ -28,6 +28,17 @@ from controller.suite_registry import (
     write_suite_summary,
     write_suite_dashboard,
 )
+
+from controller.core.target_serializer import (
+    serialize_target,
+    uses_generic_target_option,
+)
+
+from controller.targets.bgp_neighbor import (
+    resolve_bgp_neighbors_for_node,
+)
+
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_TOPOLOGY = str(BASE_DIR / "artifacts" / "topology" / "topology_full.json")
 DEFAULT_UI_SERVER = "http://127.0.0.1:8000"
@@ -252,6 +263,119 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "network": "Transient control-plane reconvergence while physical links remain up.",
             "telemetry": "Short-lived control queue movement and routing convergence activity.",
             "rca": "UI should correlate BGP clear with bounded control-plane symptoms and clean recovery.",
+        },
+    },
+    "bgp_neighbor_shutdown_single": {
+        "stress_mode": "bgp_neighbor_shutdown",
+        "description": (
+            "Deactivate one explicitly selected BGP neighbor and validate "
+            "bounded control-plane and traffic impact."
+        ),
+        "tier": "production_basic",
+        "maturity": "beta",
+        "release_gate": True,
+        "recovery_slo_seconds": 60,
+        "target_type": "bgp_neighbor",
+        "requires_explicit_target": True,
+        "selection_policy": {
+            "selection_mode": "manual_or_auto",
+            "session_role": "control_plane",
+            "blast_radius": "single_neighbor",
+            "max_targets": 1,
+            "prefer_healthy": True,
+        },
+        "expected_classifications": [
+            "expected-transient-control-impact",
+            "expected-transient-fabric-reconvergence",
+        ],
+        "expected_behavior": {
+            "network": (
+                "The selected BGP adjacency transitions down while other "
+                "adjacencies remain available."
+            ),
+            "telemetry": (
+                "One neighbor-state transition and bounded route convergence "
+                "activity should be visible."
+            ),
+            "rca": (
+                "RCA should identify the selected node and peer IP as the "
+                "injected control-plane fault."
+            ),
+        },
+    },
+    "bgp_neighbor_restore_single": {
+        "stress_mode": "bgp_neighbor_restore",
+        "description": (
+            "Restore one explicitly selected BGP neighbor and validate "
+            "session and route recovery."
+        ),
+        "tier": "production_basic",
+        "maturity": "beta",
+        "release_gate": True,
+        "recovery_slo_seconds": 60,
+        "target_type": "bgp_neighbor",
+        "requires_explicit_target": True,
+        "selection_policy": {
+            "selection_mode": "manual_or_auto",
+            "session_role": "control_plane",
+            "blast_radius": "single_neighbor",
+            "max_targets": 1,
+            "prefer_healthy": False,
+        },
+        "expected_classifications": [
+            "expected-control-plane-recovery",
+        ],
+        "expected_behavior": {
+            "network": (
+                "The selected BGP adjacency returns to Established and "
+                "associated routes reconverge."
+            ),
+            "telemetry": (
+                "Neighbor recovery and bounded route programming activity "
+                "should be visible."
+            ),
+            "rca": (
+                "RCA should identify successful recovery of the selected "
+                "node and peer IP."
+            ),
+        },
+    },
+    "bgp_neighbor_flap_single": {
+        "stress_mode": "bgp_neighbor_flap",
+        "description": (
+            "Deactivate and reactivate one BGP neighbor and validate bounded "
+            "reconvergence under active traffic."
+        ),
+        "tier": "production_basic",
+        "maturity": "beta",
+        "release_gate": True,
+        "recovery_slo_seconds": 60,
+        "target_type": "bgp_neighbor",
+        "requires_explicit_target": True,
+        "selection_policy": {
+            "selection_mode": "manual_or_auto",
+            "session_role": "control_plane",
+            "blast_radius": "single_neighbor",
+            "max_targets": 1,
+            "prefer_healthy": True,
+        },
+        "expected_classifications": [
+            "expected-transient-control-impact",
+            "expected-control-plane-recovery",
+        ],
+        "expected_behavior": {
+            "network": (
+                "The selected adjacency transitions down and returns to "
+                "Established with bounded traffic impact."
+            ),
+            "telemetry": (
+                "A down/up neighbor transition and route reconvergence "
+                "should be visible."
+            ),
+            "rca": (
+                "RCA should correlate the selected BGP peer flap with "
+                "control-plane and traffic evidence."
+            ),
         },
     },
     "bgp_evpn_flap_under_load": {
@@ -1173,10 +1297,122 @@ def resolve_targets_for_scenario(
     explicit_node: Optional[str],
     explicit_interface: Optional[str],
     explicit_targets: Optional[str],
+    explicit_bgp_targets: Optional[str],
     selected_nodes_raw: Optional[str],
     one_per_node: bool,
 ) -> List[Dict[str, str]]:
     scenario = SCENARIOS[scenario_name]
+
+
+    if explicit_bgp_targets:
+        if scenario.get("target_type") != "bgp_neighbor":
+            raise ValueError(
+                f"Scenario '{scenario_name}' does not accept "
+                "--bgp-targets"
+            )
+
+        targets: List[Dict[str, str]] = []
+
+        for raw_target in explicit_bgp_targets.split(","):
+            value = raw_target.strip()
+
+            if not value:
+                continue
+
+            parts = value.split("|", 1)
+
+            if len(parts) != 2:
+                raise ValueError(
+                    f"Invalid BGP target '{value}'. "
+                    "Expected node|peer_ip"
+                )
+
+            node, peer_ip = [part.strip() for part in parts]
+
+            if not node or not peer_ip:
+                raise ValueError(
+                    f"Invalid BGP target '{value}'. "
+                    "Both node and peer_ip are required"
+                )
+
+            targets.append({
+                "target_type": "bgp_neighbor",
+                "node": node,
+                "peer_ip": peer_ip,
+            })
+
+        if not targets:
+            raise ValueError(
+                "At least one valid --bgp-targets entry is required"
+            )
+
+        if (
+            scenario.get("selection_policy", {}).get("max_targets") == 1
+            and len(targets) != 1
+        ):
+            raise ValueError(
+                f"{scenario_name} requires exactly one BGP target"
+            )
+
+        return targets
+
+    if scenario.get("target_type") == "bgp_neighbor":
+        selected_nodes = [
+            node.strip()
+            for node in (selected_nodes_raw or "").split(",")
+            if node.strip()
+        ]
+
+        if not selected_nodes:
+            raise ValueError(
+                f"{scenario_name} requires either "
+                "--bgp-targets or --selected-nodes"
+            )
+
+        topology_for_bgp = topology_path
+
+        resolved_bgp_targets: List[Dict[str, str]] = []
+
+        for node_name in selected_nodes:
+            peers = resolve_bgp_neighbors_for_node(
+                topology_path=topology_for_bgp,
+                node=node_name,
+                established_only=True,
+            )
+
+            for peer in peers:
+                resolved_bgp_targets.append({
+                    "target_type": "bgp_neighbor",
+                    "node": peer["node"],
+                    "peer_ip": peer["peer_ip"],
+                })
+
+        if not resolved_bgp_targets:
+            raise RuntimeError(
+                f"No established BGP neighbors resolved for "
+                f"selected nodes: {selected_nodes}"
+            )
+
+        resolved_bgp_targets = sorted(
+            resolved_bgp_targets,
+            key=lambda target: (
+                target["node"],
+                target["peer_ip"],
+            ),
+        )
+
+        max_targets = (
+            scenario.get("selection_policy", {})
+            .get("max_targets")
+        )
+
+        if max_targets:
+            resolved_bgp_targets = resolved_bgp_targets[
+                : int(max_targets)
+            ]
+
+        return resolved_bgp_targets
+
 
     # Manual target always wins
     if explicit_node and explicit_interface:
@@ -1185,8 +1421,17 @@ def resolve_targets_for_scenario(
     # Explicit targets override topology resolution
     if explicit_targets:
         targets = parse_explicit_targets(explicit_targets)
-        if scenario_name in ( "single_interface_bounce" or "single_interface_flap") and len(targets) != 1:
-            raise ValueError("single_interface_bounce requires exactly one target when using --targets")
+        if (
+            scenario_name in (
+                "single_interface_bounce",
+                "single_interface_flap",
+            )
+            and len(targets) != 1
+        ):
+            raise ValueError(
+                f"{scenario_name} requires exactly one target "
+                "when using --targets"
+            )
         return targets
 
     topology = load_json(topology_path)
@@ -1349,6 +1594,7 @@ def run_stress_event(
 ) -> str:
     stress_mode = SCENARIOS[scenario_name]["stress_mode"]
 
+
     cmd = [
         sys.executable,
         "-m",
@@ -1393,20 +1639,27 @@ def run_stress_event(
         cmd.append("--strict-pre-event-gate")
 
     if targets:
-        if stress_mode == "bgp_clear":
-            targets_arg = ",".join(
-                f"{t['node']}" for t in targets if t.get("node")
-            )
-        else:
-            targets_arg = ",".join(
-                f"{t['node']}|{t['interface']}"
-                for t in targets
-                if t.get("node") and t.get("interface")
-            )
+        serialized_targets = [
+            serialize_target(stress_mode, target)
+            for target in targets
+        ]
 
-        if targets_arg:
-            cmd.extend(["--targets", targets_arg])
-            cmd.extend(["--parallel", str(len(targets))])
+        if uses_generic_target_option(stress_mode):
+            for serialized_target in serialized_targets:
+                cmd.extend([
+                    "--target",
+                    serialized_target,
+                ])
+        else:
+            cmd.extend([
+                "--targets",
+                ",".join(serialized_targets),
+            ])
+
+        cmd.extend([
+            "--parallel",
+            str(len(serialized_targets)),
+        ])
 
     if degraded_hold_seconds > 0:
         cmd.extend([
@@ -1436,7 +1689,10 @@ def run_stress_event(
     if flap_up_wait_seconds:
         cmd.extend(["--flap-up-wait-seconds", str(flap_up_wait_seconds)])
 
-
+    print(
+        "[FAULT-INJECTION] stress orchestrator command:",
+        " ".join(cmd),
+    )
     run_subprocess(cmd, "STRESS_ORCHESTRATOR")
 
     json_out = BASE_DIR / "artifacts" / "orchestrator" / stress_run_id / "stress_orchestrator_report.json"
@@ -2750,6 +3006,7 @@ def run_single_scenario(
     node: Optional[str],
     interface: Optional[str],
     targets: Optional[str],
+    bgp_targets: Optional[str],
     selected_nodes: Optional[str],
     one_per_node: bool,
     ui_server_url: str,
@@ -2831,6 +3088,7 @@ def run_single_scenario(
         explicit_node=node,
         explicit_interface=interface,
         explicit_targets=targets,
+        explicit_bgp_targets=bgp_targets,
         selected_nodes_raw=selected_nodes,
         one_per_node=one_per_node,
     )
@@ -3418,6 +3676,7 @@ def run_suite(
     node: Optional[str],
     interface: Optional[str],
     targets: Optional[str],
+    bgp_targets: Optional[str] = None,
     selected_nodes: Optional[str],
     one_per_node: bool,
     ui_server_url: str,
@@ -3487,6 +3746,7 @@ def run_suite(
                 node=scenario_node,
                 interface=scenario_interface,
                 targets=targets,
+                bgp_targets=bgp_targets,
                 selected_nodes=selected_nodes,
                 one_per_node=one_per_node,
                 ui_server_url=ui_server_url,
@@ -3828,6 +4088,16 @@ def parse_args() -> argparse.Namespace:
         help="Recovery wait after interface is re-enabled.",
     )
 
+    parser.add_argument(
+        "--bgp-targets",
+        help=(
+            "Explicit BGP neighbor targets in node|peer_ip format, "
+            "comma-separated. Example: "
+            "leaf7|2001::1:0:17:0"
+        ),
+    )
+
+
     args = parser.parse_args()
     normalize_phase_timing_args(args)
 
@@ -3917,6 +4187,7 @@ def main() -> int:
                 node=args.node,
                 interface=args.interface,
                 targets=args.targets,
+                bgp_targets=args.bgp_targets,
                 selected_nodes=args.selected_nodes,
                 one_per_node=args.one_per_node,
                 ui_server_url=args.ui_server_url,
@@ -4054,6 +4325,7 @@ def main() -> int:
             node=args.node,
             interface=args.interface,
             targets=args.targets,
+            bgp_targets=args.bgp_targets,
             selected_nodes=args.selected_nodes,
             one_per_node=args.one_per_node,
             ui_server_url=args.ui_server_url,

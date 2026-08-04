@@ -504,20 +504,19 @@ def _execute_bgp_neighbor_flap(
         peer_ip=context.target.get("peer_ip"),
         inventory=context.inventory,
         down_seconds=context.option(
-            "bgp_flap_down_seconds",
+            "flap_down_seconds",
             10,
         ),
         up_wait_seconds=context.option(
-            "bgp_flap_up_wait_seconds",
+            "flap_up_wait_seconds",
             context.settle_seconds,
         ),
         repeat=context.option(
-            "bgp_flap_repeat",
+            "flap_repeat",
             1,
         ),
         bgp_group=context.target.get("bgp_group"),
     )
-
 
 
 def _execute_interface_bounce(context: StressActionContext):

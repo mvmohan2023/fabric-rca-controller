@@ -58,6 +58,14 @@ from controller.core.registry import (
     validation_registry,
 )
 
+from controller.core.target_serializer import (
+    TargetSerializationError,
+    infer_target_type,
+    serialize_generic_target,
+    serialize_target,
+    uses_generic_target_option,
+)
+
 from controller.core.artifact_manager import ArtifactManager
 from controller.core.execution_context import ExecutionContext
 from controller.core.report_manager import ReportManager
@@ -94,4 +102,9 @@ __all__ = [
     "ReportManager",
     "StressActionContext",
     "target_registry",
+    "TargetSerializationError",
+    "infer_target_type",
+    "serialize_generic_target",
+    "serialize_target",
+    "uses_generic_target_option",
 ]
