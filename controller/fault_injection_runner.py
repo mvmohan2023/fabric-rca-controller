@@ -1501,6 +1501,34 @@ def resolve_targets_for_scenario(
 
     return filtered
 
+def format_resolved_target(target: Dict[str, Any]) -> str:
+    """Return a readable target label for logs and artifacts."""
+
+    node = str(target.get("node") or "").strip()
+    target_type = str(target.get("target_type") or "").strip()
+
+    if target_type == "bgp_neighbor" or target.get("peer_ip"):
+        peer_ip = str(target.get("peer_ip") or "").strip()
+
+        if node and peer_ip:
+            return f"{node}|{peer_ip}"
+
+        return node or peer_ip
+
+    if target_type == "interface" or target.get("interface"):
+        interface = str(target.get("interface") or "").strip()
+
+        if node and interface:
+            return f"{node}:{interface}"
+
+        return node or interface
+
+    resource = str(target.get("resource") or "").strip()
+
+    if target_type and node and resource:
+        return f"{target_type}|{node}|{resource}"
+
+    return node or resource or str(target)
 
 
 def write_resolved_targets_artifacts(
@@ -1516,10 +1544,11 @@ def write_resolved_targets_artifacts(
     run_dir.mkdir(parents=True, exist_ok=True)
     repro_dir.mkdir(parents=True, exist_ok=True)
 
-    if targets and all(t.get("interface") for t in targets):
-        targets_arg = ",".join(f"{t['node']}:{t['interface']}" for t in targets)
-    else:
-        targets_arg = ",".join(f"{t['node']}" for t in targets)
+    targets_arg = ",".join(
+        format_resolved_target(target)
+        for target in targets
+    )
+
 
     payload = {
         "run_id": run_id,
@@ -1564,6 +1593,50 @@ def write_resolved_targets_artifacts(
         "repro_txt": str(repro_txt),
         "targets_arg": targets_arg,
     }
+
+def format_resolved_target(target: Dict[str, Any]) -> str:
+    """Return a readable, target-type-aware representation."""
+
+    target_type = str(
+        target.get("target_type") or ""
+    ).strip()
+
+    node = str(
+        target.get("node") or ""
+    ).strip()
+
+    if target_type == "bgp_neighbor" or target.get("peer_ip"):
+        peer_ip = str(
+            target.get("peer_ip") or ""
+        ).strip()
+
+        return (
+            f"{node}|{peer_ip}"
+            if node and peer_ip
+            else node or peer_ip
+        )
+
+    if target_type == "interface" or target.get("interface"):
+        interface = str(
+            target.get("interface") or ""
+        ).strip()
+
+        return (
+            f"{node}|{interface}"
+            if node and interface
+            else node or interface
+        )
+
+    resource = str(
+        target.get("resource") or ""
+    ).strip()
+
+    if target_type and node and resource:
+        return f"{target_type}|{node}|{resource}"
+
+    return node or resource or str(target)
+
+
 
 def run_stress_event(
     *,
