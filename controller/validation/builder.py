@@ -13,6 +13,9 @@ from controller.validation.models import (
     ValidationResult,
 )
 
+from controller.validation.event import evaluate_event
+from controller.validation.impact import evaluate_impact
+
 
 class EngineeringValidationBuilder:
     """Build a normalized engineering-validation result.
@@ -70,8 +73,16 @@ class EngineeringValidationBuilder:
         evaluators.
         """
 
-        event = self._pending_result("event")
-        impact = self._pending_result("impact")
+        event = evaluate_event(
+            stress_validation=self.stress_validation,
+            rca_validation=self.rca_validation,
+            ui_validation=self.ui_validation,
+        )
+
+        impact = evaluate_impact(
+            ui_validation=self.ui_validation,
+            evidence_rollup=self.evidence_rollup,
+        )
         recovery = self._pending_result("recovery")
         traffic = self._pending_result("traffic")
         telemetry = self._pending_result("telemetry")
@@ -87,7 +98,7 @@ class EngineeringValidationBuilder:
             overall_status="INCONCLUSIVE",
             overall_confidence=0.0,
             summary=(
-                "Engineering validation contract initialized; "
-                "domain evaluators are pending."
+                "Event and impact validation completed; recovery, "
+                "traffic, telemetry, and platform evaluators are pending."
             ),
         )
