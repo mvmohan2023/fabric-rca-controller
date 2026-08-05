@@ -13,6 +13,8 @@ from controller.validation.models import (
     EngineeringValidationResult,
     ValidationResult,
 )
+from controller.validation.recovery import evaluate_recovery
+from controller.validation.traffic import evaluate_traffic
 
 __all__ = [
     "EngineeringValidationBuilder",
@@ -20,4 +22,6 @@ __all__ = [
     "ValidationResult",
     "evaluate_event",
     "evaluate_impact",
+    "evaluate_recovery",
+    "evaluate_traffic",
 ]

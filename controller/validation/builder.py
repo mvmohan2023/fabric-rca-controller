@@ -15,7 +15,8 @@ from controller.validation.models import (
 
 from controller.validation.event import evaluate_event
 from controller.validation.impact import evaluate_impact
-
+from controller.validation.recovery import evaluate_recovery
+from controller.validation.traffic import evaluate_traffic
 
 class EngineeringValidationBuilder:
     """Build a normalized engineering-validation result.
@@ -33,6 +34,8 @@ class EngineeringValidationBuilder:
         evidence_rollup: Dict[str, Any],
         phase_timeline: Dict[str, Any] | None = None,
         scenario: Dict[str, Any] | None = None,
+        post_sample_health: list[Dict[str, Any]] | None = None,
+        traffic_required: bool | None = None,
     ) -> None:
         self.stress_validation = dict(
             stress_validation or {}
@@ -52,6 +55,10 @@ class EngineeringValidationBuilder:
         self.scenario = dict(
             scenario or {}
         )
+        self.post_sample_health = list(
+            post_sample_health or []
+        )
+        self.traffic_required = traffic_required
 
     @staticmethod
     def _pending_result(domain: str) -> ValidationResult:
@@ -83,8 +90,18 @@ class EngineeringValidationBuilder:
             ui_validation=self.ui_validation,
             evidence_rollup=self.evidence_rollup,
         )
-        recovery = self._pending_result("recovery")
-        traffic = self._pending_result("traffic")
+        recovery = evaluate_recovery(
+            stress_validation=self.stress_validation,
+            evidence_rollup=self.evidence_rollup,
+            phase_timeline=self.phase_timeline,
+            post_sample_health=self.post_sample_health,
+        )
+
+        traffic = evaluate_traffic(
+            evidence_rollup=self.evidence_rollup,
+            ui_validation=self.ui_validation,
+            traffic_required=self.traffic_required,
+        )
         telemetry = self._pending_result("telemetry")
         platform = self._pending_result("platform")
 
@@ -98,7 +115,7 @@ class EngineeringValidationBuilder:
             overall_status="INCONCLUSIVE",
             overall_confidence=0.0,
             summary=(
-                "Event and impact validation completed; recovery, "
-                "traffic, telemetry, and platform evaluators are pending."
+                "Event, impact, recovery, and traffic validation completed; "
+                "telemetry and platform evaluators are pending."
             ),
         )
