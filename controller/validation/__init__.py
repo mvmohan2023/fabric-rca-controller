@@ -15,6 +15,8 @@ from controller.validation.models import (
 )
 from controller.validation.recovery import evaluate_recovery
 from controller.validation.traffic import evaluate_traffic
+from controller.validation.platform import evaluate_platform
+from controller.validation.telemetry import evaluate_telemetry
 
 __all__ = [
     "EngineeringValidationBuilder",
@@ -24,4 +26,6 @@ __all__ = [
     "evaluate_impact",
     "evaluate_recovery",
     "evaluate_traffic",
+    "evaluate_platform",
+    "evaluate_telemetry",
 ]

@@ -17,6 +17,8 @@ from controller.validation.event import evaluate_event
 from controller.validation.impact import evaluate_impact
 from controller.validation.recovery import evaluate_recovery
 from controller.validation.traffic import evaluate_traffic
+from controller.validation.platform import evaluate_platform
+from controller.validation.telemetry import evaluate_telemetry
 
 class EngineeringValidationBuilder:
     """Build a normalized engineering-validation result.
@@ -36,6 +38,7 @@ class EngineeringValidationBuilder:
         scenario: Dict[str, Any] | None = None,
         post_sample_health: list[Dict[str, Any]] | None = None,
         traffic_required: bool | None = None,
+        platform_health: Dict[str, Any] | None = None,
     ) -> None:
         self.stress_validation = dict(
             stress_validation or {}
@@ -59,6 +62,9 @@ class EngineeringValidationBuilder:
             post_sample_health or []
         )
         self.traffic_required = traffic_required
+        self.platform_health = dict(
+            platform_health or {}
+        )
 
     @staticmethod
     def _pending_result(domain: str) -> ValidationResult:
@@ -102,8 +108,17 @@ class EngineeringValidationBuilder:
             ui_validation=self.ui_validation,
             traffic_required=self.traffic_required,
         )
-        telemetry = self._pending_result("telemetry")
-        platform = self._pending_result("platform")
+
+        telemetry = evaluate_telemetry(
+            evidence_rollup=self.evidence_rollup,
+            phase_timeline=self.phase_timeline,
+            post_sample_health=self.post_sample_health,
+        )
+
+        platform = evaluate_platform(
+            evidence_rollup=self.evidence_rollup,
+            platform_health=self.platform_health,
+        )
 
         return EngineeringValidationResult(
             event=event,
@@ -115,7 +130,7 @@ class EngineeringValidationBuilder:
             overall_status="INCONCLUSIVE",
             overall_confidence=0.0,
             summary=(
-                "Event, impact, recovery, and traffic validation completed; "
-                "telemetry and platform evaluators are pending."
+                "All engineering validation domains were evaluated. "
+                "Overall classification integration is pending."
             ),
         )
