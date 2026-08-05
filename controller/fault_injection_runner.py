@@ -38,6 +38,11 @@ from controller.targets.bgp_neighbor import (
     resolve_bgp_neighbors_for_node,
 )
 
+from controller.validation import (
+    EngineeringValidationBuilder,
+    load_post_sample_health,
+)
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_TOPOLOGY = str(BASE_DIR / "artifacts" / "topology" / "topology_full.json")
@@ -3512,6 +3517,27 @@ def run_single_scenario(
     refreshed_case_summary = load_json(case_summary_path)
     evidence_rollup = build_evidence_rollup(refreshed_case_summary)
 
+    phase_timeline = {
+        "baseline_window": baseline_window,
+        "running_decay": running_decay,
+        "settle_gap": settle_gap,
+        "post_window": post_window,
+        "baseline_telemetry": baseline_telemetry_path,
+        "running_telemetry": running_telemetry_path,
+        "post_telemetry": post_telemetry_path,
+        "pre_sample_paths": pre_sample_paths,
+        "post_sample_paths": post_sample_paths,
+    }
+
+    post_sample_health = load_post_sample_health(
+        post_sample_paths
+    )
+
+    progress.info(
+        f"engineering_validation_post_sample_health_count="
+        f"{len(post_sample_health)}"
+    )
+
     ui_server_ok = True
     if not skip_ui_check:
         ui_server_ok = check_ui_server(ui_server_url)
@@ -3523,6 +3549,48 @@ def run_single_scenario(
         evidence_rollup=evidence_rollup,
     )
 
+    engineering_validation_result = (
+        EngineeringValidationBuilder(
+            stress_validation=stress_validation,
+            rca_validation=rca_validation,
+            ui_validation=ui_validation,
+            evidence_rollup=evidence_rollup,
+            phase_timeline=phase_timeline,
+            scenario=scenario,
+            post_sample_health=post_sample_health,
+
+            # None allows the traffic evaluator to use available evidence.
+            # Scenario-specific mandatory traffic policy will be added later.
+            traffic_required=None,
+
+            # No complete platform-health artifact exists yet.
+            # The platform evaluator correctly returns INCONCLUSIVE unless
+            # explicit platform evidence or hard failure signals are present.
+            platform_health={},
+        ).build()
+    )
+
+    progress.info(
+        "engineering_validation_overall_status="
+        f"{engineering_validation['overall_status']}"
+    )
+
+    for domain in (
+        "event",
+        "impact",
+        "recovery",
+        "traffic",
+        "telemetry",
+        "platform",
+    ):
+        progress.info(
+            f"engineering_validation_{domain}_status="
+            f"{engineering_validation[domain]['status']}"
+        )
+
+    engineering_validation = (
+        engineering_validation_result.to_dict()
+    )
     print(f"Validation Status   : {final_status}")
     print(f"Event Execution OK  : {'YES' if event_ok else 'NO'}")
     print(f"Impact Observed     : {'YES' if impact_ok else 'NO'}")
@@ -3544,6 +3612,7 @@ def run_single_scenario(
         "event_ok": event_ok,
         "impact_ok": impact_ok,
         "evidence_rollup": evidence_rollup,
+        "engineering_validation": engineering_validation,
         "telemetry_health": ui_validation.get("telemetry_health", {}),
         "bug_candidate_signals": ui_validation.get("bug_candidate_signals", []),
         "stress_classification": ui_validation.get("stress_classification", {}),
@@ -3552,17 +3621,7 @@ def run_single_scenario(
         "cos_hotspot_top": cos_hotspot_data.get("hotspots", [])[:10],
         "final_status": final_status,
         "resolved_targets_artifacts": resolved_target_artifacts,
-        "phase_timeline": {
-            "baseline_window": baseline_window,
-            "running_decay": running_decay,
-            "settle_gap": settle_gap,
-            "post_window": post_window,
-            "baseline_telemetry": baseline_telemetry_path,
-            "running_telemetry": running_telemetry_path,
-            "post_telemetry": post_telemetry_path,
-            "pre_sample_paths": pre_sample_paths,
-            "post_sample_paths": post_sample_paths,
-        },
+        "phase_timeline": phase_timeline,
     }
 
     progress.info(f"final_status={final_status}")
