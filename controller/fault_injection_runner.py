@@ -4361,9 +4361,16 @@ def main() -> int:
             "artifacts", "campaigns", args.rca_run_id, "rca_ui_report.json"
         )
 
+        validation_path = os.path.join(
+            "artifacts",
+            "campaigns",
+            args.rca_run_id,
+            "fault_injection_validation.json",
+        )
+
 
         try:
-            if os.path.exists(summary_path) and os.path.exists(ui_report_path):
+            if os.path.exists(summary_path) and os.path.exists(ui_report_path) and os.path.exists(validation_path):
                 from controller.rca_ui_report_builder import build_rca_ui_report
 
                 refreshed = build_rca_ui_report(summary_path)
@@ -4399,7 +4406,14 @@ def main() -> int:
                 "artifacts", "campaigns", args.rca_run_id, "rca_ui_report.json"
             )
 
-            if os.path.exists(summary_path) and os.path.exists(ui_report_path):
+            validation_path = os.path.join(
+                "artifacts",
+                "campaigns",
+                args.rca_run_id,
+                "fault_injection_validation.json",
+            )
+
+            if os.path.exists(summary_path) and os.path.exists(ui_report_path) and os.path.exists(validation_path):
                 register_run(
                     suite_id=args.suite_id,
                     suite_name=args.suite_name or args.suite_id,
@@ -4408,6 +4422,7 @@ def main() -> int:
                     scenario=args.scenario,
                     summary_path=summary_path,
                     ui_report_path=ui_report_path,
+                    validation_path=validation_path,
                 )
 
                 suite_summary = write_suite_summary(suite_id=args.suite_id)

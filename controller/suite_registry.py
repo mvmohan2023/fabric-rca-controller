@@ -52,6 +52,7 @@ def register_run(
     scenario: str,
     summary_path: str,
     ui_report_path: str,
+    validation_path: str = "",
 ) -> None:
     if not suite_id:
         return
@@ -80,7 +81,9 @@ def register_run(
             "scenario": scenario,
             "summary_path": summary_path,
             "ui_report_path": ui_report_path,
+            "validation_path": validation_path,
             "registered_at": _utc_now_iso(),
+
         }
     )
 
@@ -97,66 +100,287 @@ def _safe_load(path: str) -> Dict[str, Any]:
 
 
 def build_suite_summary(*, suite_id: str) -> Dict[str, Any]:
-    runs_data = load_json_file(suite_runs_path(suite_id), {})
-    runs = runs_data.get("runs", [])
+    runs_data = load_json_file(
+        suite_runs_path(suite_id),
+        {},
+    )
+    runs = runs_data.get("runs", []) or []
 
     summary = {
         "suite_id": suite_id,
-        "suite_name": runs_data.get("suite_name", suite_id),
+        "suite_name": runs_data.get(
+            "suite_name",
+            suite_id,
+        ),
         "updated_at": _utc_now_iso(),
         "total_runs": 0,
+
+        # Legacy counters — preserved.
         "pass_count": 0,
         "fail_count": 0,
         "warn_count": 0,
         "unknown_count": 0,
+
+        # Additive engineering-validation aggregation.
+        "engineering_counts": {
+            "pass": 0,
+            "warn": 0,
+            "fail": 0,
+            "inconclusive": 0,
+            "unknown": 0,
+        },
+        "engineering_confidence": 0.0,
+        "blocking_runs": [],
+        "warning_runs": [],
+        "inconclusive_runs": [],
         "runs": [],
     }
+
+    # Only runs containing a real EVL result contribute to suite confidence.
+    engineering_confidences: List[float] = []
 
     for run in runs:
         run_id = run.get("run_id", "")
         summary_path = run.get("summary_path", "")
-        ui_report_path = run.get("ui_report_path", "")
+        ui_report_path = run.get(
+            "ui_report_path",
+            "",
+        )
+        validation_path = run.get(
+            "validation_path",
+            "",
+        )
+
+        # Backward-compatible fallback for older suite entries.
+        if not validation_path and run_id:
+            candidate = os.path.join(
+                "artifacts",
+                "campaigns",
+                run_id,
+                "fault_injection_validation.json",
+            )
+            if os.path.exists(candidate):
+                validation_path = candidate
 
         case_summary = _safe_load(summary_path)
         ui_report = _safe_load(ui_report_path)
+        validation_report = _safe_load(
+            validation_path
+        )
 
-        traffic_health = ui_report.get("traffic_health", {}) or {}
-        rocev2_verdict = traffic_health.get("rocev2_verdict", "unknown")
-        traffic_verdict = traffic_health.get("traffic_verdict", "unknown")
+        engineering_validation = (
+            validation_report.get(
+                "engineering_validation",
+                {},
+            )
+            or {}
+        )
+
+        # --------------------------------------------------------------
+        # Legacy traffic/RoCEv2 suite aggregation — preserved.
+        # --------------------------------------------------------------
+        traffic_health = (
+            ui_report.get("traffic_health", {})
+            or {}
+        )
+
+        rocev2_verdict = str(
+            traffic_health.get(
+                "rocev2_verdict",
+                "unknown",
+            )
+            or "unknown"
+        ).strip().lower()
+
+        traffic_verdict = str(
+            traffic_health.get(
+                "traffic_verdict",
+                "unknown",
+            )
+            or "unknown"
+        ).strip().lower()
 
         test_verdict = rocev2_verdict
+
         if test_verdict == "pass":
             summary["pass_count"] += 1
         elif test_verdict == "fail":
             summary["fail_count"] += 1
-        elif test_verdict == "warn":
+        elif test_verdict in {"warn", "warning"}:
             summary["warn_count"] += 1
         else:
             summary["unknown_count"] += 1
 
-        status = case_summary.get("status", {}) or {}
+        # --------------------------------------------------------------
+        # New engineering-validation aggregation.
+        # --------------------------------------------------------------
+        engineering_status = str(
+            engineering_validation.get(
+                "overall_status",
+            )
+            or "UNKNOWN"
+        ).strip().upper()
+
+        try:
+            engineering_confidence = float(
+                engineering_validation.get(
+                    "overall_confidence",
+                    0.0,
+                )
+                or 0.0
+            )
+        except (TypeError, ValueError):
+            engineering_confidence = 0.0
+
+        # Protect suite aggregation from malformed values.
+        engineering_confidence = max(
+            0.0,
+            min(
+                1.0,
+                engineering_confidence,
+            ),
+        )
+
+        engineering_summary = str(
+            engineering_validation.get(
+                "summary",
+            )
+            or ""
+        )
+
+        engineering_count_key = {
+            "PASS": "pass",
+            "WARN": "warn",
+            "FAIL": "fail",
+            "INCONCLUSIVE": "inconclusive",
+        }.get(
+            engineering_status,
+            "unknown",
+        )
+
+        summary["engineering_counts"][
+            engineering_count_key
+        ] += 1
+
+        # Do not let legacy/unknown runs contribute zero confidence.
+        if engineering_status in {
+            "PASS",
+            "WARN",
+            "FAIL",
+            "INCONCLUSIVE",
+        }:
+            engineering_confidences.append(
+                engineering_confidence
+            )
+
+        engineering_run = {
+            "run_id": run_id,
+            "test_case_id": run.get(
+                "test_case_id",
+                "",
+            ),
+            "scenario": run.get(
+                "scenario",
+                "",
+            ),
+            "engineering_status":
+                engineering_status,
+            "engineering_confidence":
+                engineering_confidence,
+            "engineering_summary":
+                engineering_summary,
+            "validation_path":
+                validation_path,
+        }
+
+        if engineering_status == "FAIL":
+            summary["blocking_runs"].append(
+                engineering_run
+            )
+        elif engineering_status == "WARN":
+            summary["warning_runs"].append(
+                engineering_run
+            )
+        elif engineering_status in {
+            "INCONCLUSIVE",
+            "UNKNOWN",
+        }:
+            summary[
+                "inconclusive_runs"
+            ].append(
+                engineering_run
+            )
+
+        status = (
+            case_summary.get("status", {})
+            or {}
+        )
+
         root_cause = (
-            (traffic_health.get("executive_summary", {}) or {}).get("detected_root_cause")
-            or traffic_health.get("detected_root_cause")
+            (
+                traffic_health.get(
+                    "executive_summary",
+                    {},
+                )
+                or {}
+            ).get("detected_root_cause")
+            or traffic_health.get(
+                "detected_root_cause"
+            )
             or "unknown"
         )
 
         summary["runs"].append(
             {
                 "run_id": run_id,
-                "test_case_id": run.get("test_case_id", ""),
-                "scenario": run.get("scenario", ""),
-                "traffic_verdict": traffic_verdict,
-                "rocev2_verdict": rocev2_verdict,
-                "test_verdict": test_verdict,
-                "root_cause": root_cause,
-                "summary_path": summary_path,
-                "ui_report_path": ui_report_path,
-                "status": status,
+                "test_case_id": run.get(
+                    "test_case_id",
+                    "",
+                ),
+                "scenario": run.get(
+                    "scenario",
+                    "",
+                ),
+
+                # Legacy fields.
+                "traffic_verdict":
+                    traffic_verdict,
+                "rocev2_verdict":
+                    rocev2_verdict,
+                "test_verdict":
+                    test_verdict,
+                "root_cause":
+                    root_cause,
+                "summary_path":
+                    summary_path,
+                "ui_report_path":
+                    ui_report_path,
+                "status":
+                    status,
+
+                # Additive engineering fields.
+                "validation_path":
+                    validation_path,
+                "engineering_status":
+                    engineering_status,
+                "engineering_confidence":
+                    engineering_confidence,
+                "engineering_summary":
+                    engineering_summary,
             }
         )
 
-    summary["total_runs"] = len(summary["runs"])
+    summary["total_runs"] = len(
+        summary["runs"]
+    )
+
+    if engineering_confidences:
+        summary["engineering_confidence"] = round(
+            sum(engineering_confidences)
+            / len(engineering_confidences),
+            3,
+        )
+
     return summary
 
 
