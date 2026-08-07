@@ -2,7 +2,7 @@ import json
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List
-
+import html
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -392,74 +392,465 @@ def write_suite_summary(*, suite_id: str) -> str:
 
 
 def write_suite_dashboard(*, suite_id: str) -> str:
-    summary = build_suite_summary(suite_id=suite_id)
-    out_path = suite_dashboard_path(suite_id)
+    summary = build_suite_summary(
+        suite_id=suite_id
+    )
+    out_path = suite_dashboard_path(
+        suite_id
+    )
+
+    def escape(value: Any) -> str:
+        return html.escape(
+            str(
+                value
+                if value not in (None, "")
+                else "-"
+            )
+        )
+
+    def status_class(value: Any) -> str:
+        normalized = str(
+            value or "unknown"
+        ).strip().lower()
+
+        if normalized == "pass":
+            return "status-pass"
+        if normalized in {
+            "warn",
+            "warning",
+        }:
+            return "status-warn"
+        if normalized == "fail":
+            return "status-fail"
+        if normalized == "inconclusive":
+            return "status-inconclusive"
+
+        return "status-unknown"
+
+    def artifact_link(
+        path: str,
+        label: str,
+    ) -> str:
+        if not path:
+            return "-"
+
+        return (
+            f'<a href="../../{escape(path)}">'
+            f'{escape(label)}</a>'
+        )
+
+    engineering_counts = (
+        summary.get(
+            "engineering_counts",
+            {},
+        )
+        or {}
+    )
 
     rows = []
-    for run in summary["runs"]:
+
+    for run in summary.get("runs", []):
+        engineering_status = run.get(
+            "engineering_status",
+            "UNKNOWN",
+        )
+        engineering_confidence = float(
+            run.get(
+                "engineering_confidence",
+                0.0,
+            )
+            or 0.0
+        )
+
         rows.append(
             f"""
             <tr>
-              <td>{run['test_case_id']}</td>
-              <td>{run['scenario']}</td>
-              <td>{run['run_id']}</td>
-              <td>{run['test_verdict']}</td>
-              <td>{run['traffic_verdict']}</td>
-              <td>{run['rocev2_verdict']}</td>
-              <td>{run['root_cause']}</td>
-              <td><a href="../../{run['summary_path']}">summary</a></td>
-              <td><a href="../../{run['ui_report_path']}">ui report</a></td>
+              <td>{escape(run.get('test_case_id'))}</td>
+              <td>{escape(run.get('scenario'))}</td>
+              <td>{escape(run.get('run_id'))}</td>
+
+              <td class="{status_class(engineering_status)}">
+                {escape(engineering_status)}
+              </td>
+
+              <td>{engineering_confidence:.3f}</td>
+
+              <td class="engineering-summary">
+                {escape(run.get('engineering_summary'))}
+              </td>
+
+              <td class="{status_class(run.get('test_verdict'))}">
+                {escape(run.get('test_verdict'))}
+              </td>
+
+              <td>{escape(run.get('traffic_verdict'))}</td>
+              <td>{escape(run.get('rocev2_verdict'))}</td>
+              <td>{escape(run.get('root_cause'))}</td>
+
+              <td>
+                {artifact_link(
+                    run.get("validation_path", ""),
+                    "validation report",
+                )}
+              </td>
+
+              <td>
+                {artifact_link(
+                    run.get('summary_path', ''),
+                    'summary',
+                )}
+              </td>
+
+              <td>
+                {artifact_link(
+                    run.get('ui_report_path', ''),
+                    'ui report',
+                )}
+              </td>
             </tr>
             """
         )
 
-    html = f"""
-    <html>
+    def build_run_list(
+        title: str,
+        runs: List[Dict[str, Any]],
+        empty_message: str,
+    ) -> str:
+        if not runs:
+            return f"""
+            <section>
+              <h2>{escape(title)}</h2>
+              <p>{escape(empty_message)}</p>
+            </section>
+            """
+
+        items = []
+
+        for run in runs:
+            items.append(
+                f"""
+                <li>
+                  <b>{escape(run.get('run_id'))}</b>
+                  — {escape(run.get('scenario'))}
+                  — status:
+                  <span class="{status_class(run.get('engineering_status'))}">
+                    {escape(run.get('engineering_status'))}
+                  </span>
+                  — confidence:
+                  {float(run.get('engineering_confidence', 0.0) or 0.0):.3f}
+                  <br>
+                  {escape(run.get('engineering_summary'))}
+                  <br>
+                  {artifact_link(
+                      run.get('validation_path', ''),
+                      'validation report',
+                  )}
+                </li>
+                """
+            )
+
+        return f"""
+        <section>
+          <h2>{escape(title)}</h2>
+          <ul class="run-list">
+            {''.join(items)}
+          </ul>
+        </section>
+        """
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
     <head>
-      <title>Suite Dashboard - {summary['suite_id']}</title>
+      <meta charset="utf-8">
+      <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+      >
+      <title>
+        Suite Dashboard - {escape(summary.get('suite_id'))}
+      </title>
+
       <style>
-        body {{ font-family: Arial, sans-serif; margin: 24px; }}
-        .cards {{ display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }}
-        .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; min-width: 140px; }}
-        table {{ border-collapse: collapse; width: 100%; }}
-        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-        th {{ background: #f5f5f5; }}
+        body {{
+          font-family: Arial, sans-serif;
+          margin: 24px;
+          line-height: 1.4;
+        }}
+
+        h1, h2 {{
+          margin-bottom: 12px;
+        }}
+
+        .subtitle {{
+          margin-top: -8px;
+          margin-bottom: 24px;
+        }}
+
+        .cards {{
+          display: flex;
+          gap: 16px;
+          margin-bottom: 24px;
+          flex-wrap: wrap;
+        }}
+
+        .card {{
+          border: 1px solid #ddd;
+          border-radius: 8px;
+          padding: 12px 16px;
+          min-width: 140px;
+        }}
+
+        .card-title {{
+          font-weight: bold;
+        }}
+
+        .card-value {{
+          font-size: 22px;
+          margin-top: 6px;
+        }}
+
+        .section-label {{
+          margin-top: 28px;
+          margin-bottom: 12px;
+        }}
+
+        .table-container {{
+          overflow-x: auto;
+        }}
+
+        table {{
+          border-collapse: collapse;
+          width: 100%;
+          min-width: 1500px;
+        }}
+
+        th, td {{
+          border: 1px solid #ddd;
+          padding: 8px;
+          text-align: left;
+          vertical-align: top;
+        }}
+
+        th {{
+          background: #f5f5f5;
+          position: sticky;
+          top: 0;
+        }}
+
+        .engineering-summary {{
+          min-width: 280px;
+          max-width: 420px;
+        }}
+
+        .status-pass {{
+          font-weight: bold;
+        }}
+
+        .status-warn {{
+          font-weight: bold;
+        }}
+
+        .status-fail {{
+          font-weight: bold;
+        }}
+
+        .status-inconclusive {{
+          font-weight: bold;
+        }}
+
+        .status-unknown {{
+          font-weight: bold;
+        }}
+
+        .run-list {{
+          padding-left: 24px;
+        }}
+
+        .run-list li {{
+          margin-bottom: 14px;
+        }}
+
+        .legacy-note {{
+          border-left: 4px solid #ccc;
+          padding: 10px 14px;
+          margin: 20px 0;
+        }}
       </style>
     </head>
+
     <body>
-      <h1>Suite Dashboard: {summary['suite_name']}</h1>
-      <div class="cards">
-        <div class="card"><b>Total Runs</b><br>{summary['total_runs']}</div>
-        <div class="card"><b>Pass</b><br>{summary['pass_count']}</div>
-        <div class="card"><b>Warn</b><br>{summary['warn_count']}</div>
-        <div class="card"><b>Fail</b><br>{summary['fail_count']}</div>
-        <div class="card"><b>Unknown</b><br>{summary['unknown_count']}</div>
+      <h1>
+        Suite Dashboard:
+        {escape(summary.get('suite_name'))}
+      </h1>
+
+      <div class="subtitle">
+        Suite ID:
+        <b>{escape(summary.get('suite_id'))}</b>
+        |
+        Updated:
+        {escape(summary.get('updated_at'))}
       </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Test Case ID</th>
-            <th>Scenario</th>
-            <th>Run ID</th>
-            <th>Test Verdict</th>
-            <th>Traffic Verdict</th>
-            <th>RoCEv2 Verdict</th>
-            <th>Root Cause</th>
-            <th>Summary</th>
-            <th>UI Report</th>
-          </tr>
-        </thead>
-        <tbody>
-          {''.join(rows)}
-        </tbody>
-      </table>
+      <h2 class="section-label">
+        Engineering Validation
+      </h2>
+
+      <div class="cards">
+        <div class="card">
+          <div class="card-title">Total Runs</div>
+          <div class="card-value">
+            {summary.get('total_runs', 0)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Engineering Pass</div>
+          <div class="card-value">
+            {engineering_counts.get('pass', 0)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Engineering Warn</div>
+          <div class="card-value">
+            {engineering_counts.get('warn', 0)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Engineering Fail</div>
+          <div class="card-value">
+            {engineering_counts.get('fail', 0)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            Engineering Inconclusive
+          </div>
+          <div class="card-value">
+            {engineering_counts.get('inconclusive', 0)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Engineering Unknown</div>
+          <div class="card-value">
+            {engineering_counts.get('unknown', 0)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Suite Confidence</div>
+          <div class="card-value">
+            {float(summary.get('engineering_confidence', 0.0) or 0.0):.3f}
+          </div>
+        </div>
+      </div>
+
+      <h2 class="section-label">
+        Legacy Traffic Validation
+      </h2>
+
+      <div class="cards">
+        <div class="card">
+          <div class="card-title">Legacy Pass</div>
+          <div class="card-value">
+            {summary.get('pass_count', 0)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Legacy Warn</div>
+          <div class="card-value">
+            {summary.get('warn_count', 0)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Legacy Fail</div>
+          <div class="card-value">
+            {summary.get('fail_count', 0)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Legacy Unknown</div>
+          <div class="card-value">
+            {summary.get('unknown_count', 0)}
+          </div>
+        </div>
+      </div>
+
+      <div class="legacy-note">
+        Engineering Status is derived from the normalized
+        engineering-validation result. Legacy Test, Traffic, and
+        RoCEv2 verdicts are retained for backward compatibility.
+      </div>
+
+      {build_run_list(
+          'Blocking Runs',
+          summary.get('blocking_runs', []),
+          'No blocking engineering failures were detected.',
+      )}
+
+      {build_run_list(
+          'Warning Runs',
+          summary.get('warning_runs', []),
+          'No engineering warning runs were detected.',
+      )}
+
+      {build_run_list(
+          'Inconclusive or Unknown Runs',
+          summary.get('inconclusive_runs', []),
+          'No inconclusive or unknown engineering runs were detected.',
+      )}
+
+      <h2 class="section-label">
+        Scenario Run Details
+      </h2>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Test Case ID</th>
+              <th>Scenario</th>
+              <th>Run ID</th>
+              <th>Engineering Status</th>
+              <th>Engineering Confidence</th>
+              <th>Engineering Summary</th>
+              <th>Legacy Test Verdict</th>
+              <th>Traffic Verdict</th>
+              <th>RoCEv2 Verdict</th>
+              <th>Root Cause</th>
+              <th>Validation</th>
+              <th>Summary</th>
+              <th>UI Report</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {''.join(rows)}
+          </tbody>
+        </table>
+      </div>
     </body>
     </html>
     """
 
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as fh:
-        fh.write(html)
+    os.makedirs(
+        os.path.dirname(out_path),
+        exist_ok=True,
+    )
+
+    with open(
+        out_path,
+        "w",
+        encoding="utf-8",
+    ) as fh:
+        fh.write(html_content)
 
     return out_path
