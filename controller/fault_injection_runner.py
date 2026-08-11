@@ -383,6 +383,53 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             ),
         },
     },
+    "route_churn_single": {
+        "stress_mode": "route_churn",
+        "description": (
+            "Advertise and withdraw one controlled connected prefix repeatedly "
+            "while BGP sessions remain established, validating bounded routing "
+            "convergence, traffic impact, and clean recovery."
+        ),
+        "tier": "production_basic",
+        "maturity": "beta",
+        "release_gate": True,
+        "recovery_slo_seconds": 60,
+
+        # Reuse the existing node-only target resolver.
+        "requires_selected_nodes": True,
+        "node_only_targets": True,
+
+        "selection_policy": {
+            "selection_mode": "manual",
+            "session_role": "control_plane",
+            "blast_radius": "single_node",
+            "max_targets": 1,
+            "prefer_healthy": True,
+        },
+
+        "expected_classifications": [
+            "expected-transient-control-impact",
+            "expected-control-plane-recovery",
+        ],
+
+        "expected_behavior": {
+            "network": (
+                "The controlled connected prefix is repeatedly advertised and "
+                "withdrawn while BGP sessions remain established. Routing and "
+                "traffic should reconverge within bounded time."
+            ),
+            "telemetry": (
+                "Transient route-programming and control-plane activity may be "
+                "visible, but no persistent post-event routing, interface, queue, "
+                "or platform anomaly should remain."
+            ),
+            "rca": (
+                "RCA should identify route churn on the selected node and correlate "
+                "the advertise/withdraw cycles with routing, traffic, telemetry, "
+                "and recovery evidence."
+            ),
+        },
+    },
     "bgp_evpn_flap_under_load": {
         "stress_mode": "bgp_evpn_flap",
         "description": "Flap BGP/EVPN control-plane sessions during active traffic to validate bounded reconvergence.",
@@ -1669,6 +1716,13 @@ def run_stress_event(
     flap_repeat=5,
     flap_down_seconds=10,
     flap_up_wait_seconds=60,
+    route_churn_prefix=None,
+    route_churn_unit=997,
+    route_churn_repeat=1,
+    route_churn_hold_seconds=5,
+    route_churn_recovery_seconds=5,
+    route_churn_peer=None,
+    route_churn_verify_bgp=True,
 ) -> str:
     stress_mode = SCENARIOS[scenario_name]["stress_mode"]
 
@@ -1766,6 +1820,47 @@ def run_stress_event(
         cmd.extend(["--flap-down-seconds", str(flap_down_seconds)])
     if flap_up_wait_seconds:
         cmd.extend(["--flap-up-wait-seconds", str(flap_up_wait_seconds)])
+
+    if route_churn_prefix:
+        cmd.extend([
+            "--route-churn-prefix",
+            str(route_churn_prefix),
+        ])
+
+    if route_churn_unit is not None:
+        cmd.extend([
+            "--route-churn-unit",
+            str(route_churn_unit),
+        ])
+
+    if route_churn_repeat is not None:
+        cmd.extend([
+            "--route-churn-repeat",
+            str(route_churn_repeat),
+        ])
+
+    if route_churn_hold_seconds is not None:
+        cmd.extend([
+            "--route-churn-hold-seconds",
+            str(route_churn_hold_seconds),
+        ])
+
+    if route_churn_recovery_seconds is not None:
+        cmd.extend([
+            "--route-churn-recovery-seconds",
+            str(route_churn_recovery_seconds),
+        ])
+
+    if route_churn_peer:
+        cmd.extend([
+            "--route-churn-peer",
+            str(route_churn_peer),
+        ])
+
+    if not route_churn_verify_bgp:
+        cmd.append(
+            "--no-route-churn-bgp-verification"
+        )
 
     print(
         "[FAULT-INJECTION] stress orchestrator command:",
@@ -1982,10 +2077,28 @@ def validate_stress_report(path: str, expected_target_count: int) -> Dict[str, A
         "ok": ok,
     }
 
-def validate_rca_summary(path: str, expected_stress_path: str) -> Dict[str, Any]:
+def validate_rca_summary(
+    path: str,
+    expected_stress_path: str,
+) -> Dict[str, Any]:
     data = load_json(path)
     files = data.get("files", {}) or {}
-    linked_path = files.get("stress_orchestrator_report")
+    linked_path = files.get(
+        "stress_orchestrator_report"
+    )
+
+    linked_resolved = None
+    expected_resolved = None
+
+    if linked_path:
+        linked_resolved = str(
+            Path(linked_path).resolve()
+        )
+
+    if expected_stress_path:
+        expected_resolved = str(
+            Path(expected_stress_path).resolve()
+        )
 
     return {
         "path": path,
@@ -1993,7 +2106,11 @@ def validate_rca_summary(path: str, expected_stress_path: str) -> Dict[str, Any]
         "linked_stress_report": linked_path,
         "status": data.get("status", {}),
         "files": files,
-        "ok": linked_path == expected_stress_path,
+        "ok": (
+            bool(linked_resolved)
+            and linked_resolved
+            == expected_resolved
+        ),
     }
 
 
@@ -3117,6 +3234,13 @@ def run_single_scenario(
     flap_repeat=5,
     flap_down_seconds=10,
     flap_up_wait_seconds=60,
+    route_churn_prefix=None,
+    route_churn_unit=997,
+    route_churn_repeat=1,
+    route_churn_hold_seconds=5,
+    route_churn_recovery_seconds=5,
+    route_churn_peer=None,
+    route_churn_verify_bgp=True,
 ) -> Dict[str, Any]:
     scenario = SCENARIOS[scenario_name]
 
@@ -3256,6 +3380,13 @@ def run_single_scenario(
         flap_repeat=flap_repeat,
         flap_down_seconds=flap_down_seconds,
         flap_up_wait_seconds=flap_up_wait_seconds,
+        route_churn_prefix=route_churn_prefix,
+        route_churn_unit=route_churn_unit,
+        route_churn_repeat=route_churn_repeat,
+        route_churn_hold_seconds=route_churn_hold_seconds,
+        route_churn_recovery_seconds=route_churn_recovery_seconds,
+        route_churn_peer=route_churn_peer,
+        route_churn_verify_bgp=route_churn_verify_bgp,
     )
     if scenario_name == "ecmp_member_degraded_hold_restore":
         degraded_event_artifact = BASE_DIR / "artifacts" / "campaigns" / rca_run_id / "degraded_member_hold_event.json"
@@ -3282,6 +3413,32 @@ def run_single_scenario(
     progress.stage("RCA_CASE_EXECUTION")
     t0 = time.time()
 
+
+
+    # Route churn is a control-plane route event, not an ECMP
+    # member/interface degradation event. Do not manufacture
+    # lo0.0 as an ECMP recovery target.
+    enable_ecmp_recovery_analysis = (
+        scenario_name
+        == "ecmp_member_degraded_hold_restore"
+    )
+
+    rca_ecmp_node = (
+        rca_node
+        if enable_ecmp_recovery_analysis
+        else None
+    )
+
+    rca_ecmp_interface = (
+        rca_interface
+        if enable_ecmp_recovery_analysis
+        else None
+    )
+
+    progress.info(
+        "ecmp_recovery_analysis_enabled="
+        f"{enable_ecmp_recovery_analysis}"
+    )
     case_summary_path = run_rca_case(
         rca_run_id=rca_run_id,
         src=src,
@@ -3304,9 +3461,9 @@ def run_single_scenario(
         live_monitor_interval=live_monitor_interval,
         enable_port_stats=enable_port_stats,
 
-        # Required for ECMP recovery
-        node=rca_node,
-        interface=rca_interface,
+        # Required only for ECMP member recovery analysis.
+        node=rca_ecmp_node,
+        interface=rca_ecmp_interface,
 
         # phase-aware knobs
         baseline_window=baseline_window,
@@ -3472,35 +3629,63 @@ def run_single_scenario(
     progress.info("phase_delta_reinjected_after_final_ui_rebuild=true")
 
     # Inject congestion origin / propagation analysis automatically
-    try:
-        inject_congestion_origin_analysis_into_ui_report(
-            run_id=rca_run_id,
-            case_summary_path=case_summary_path,
-            ui_report_path=ui_report_path,
-            ixia_inventory_path=ixia_inventory,
-            progress=progress,
-        )
-    except Exception as exc:
-        progress.info(f"congestion_origin_analysis_injection_failed={exc}")
-        print(f"[WARN] congestion origin analysis injection failed: {exc}")
+    # ---------------------------------------------------------
+    # ECMP recovery RCA enrichment
+    #
+    # This analysis is meaningful only for scenarios that
+    # intentionally degrade an ECMP member. Route churn is a
+    # control-plane routing event and must not manufacture an
+    # ECMP target such as lo0.0.
+    # ---------------------------------------------------------
 
-    # Inject ECMP Recovery RCA sidecar block automatically
-    try:
-        inject_ecmp_recovery_view_into_ui_report(
-            case_summary_path=case_summary_path,
-            ui_report_path=ui_report_path,
-            progress=progress,
-        )
-    except Exception as exc:
-        progress.info(f"ecmp_recovery_view_injection_failed={exc}")
-        print(f"[WARN] ECMP recovery view injection failed: {exc}")
+    if enable_ecmp_recovery_analysis:
+        try:
+            inject_ecmp_recovery_view_into_ui_report(
+                case_summary_path=case_summary_path,
+                ui_report_path=ui_report_path,
+                progress=progress,
+            )
 
-    try:
-        ui_after = load_json(ui_report_path)
-        ecmp_targets = list(((ui_after.get("ecmp_recovery_input") or {}).get("targets") or {}).keys())[:5]
-        progress.info(f"ecmp_recovery_view_injection_verify_targets={ecmp_targets}")
-    except Exception as verify_exc:
-        progress.info(f"ecmp_recovery_view_injection_verify_failed={verify_exc}")
+            ui_after = load_json(ui_report_path)
+
+            ecmp_targets = list(
+                (
+                    (
+                        ui_after.get(
+                            "ecmp_recovery_input"
+                        )
+                        or {}
+                    ).get("targets")
+                    or {}
+                ).keys()
+            )[:5]
+
+            progress.info(
+                "ecmp_recovery_view_injection_verify_targets="
+                f"{ecmp_targets}"
+            )
+
+        except Exception as exc:
+            progress.info(
+                "ecmp_recovery_view_injection_failed="
+                f"{exc}"
+            )
+
+            print(
+                "[WARN] ECMP recovery view injection "
+                f"failed: {exc}"
+            )
+
+    else:
+        progress.info(
+            "ecmp_recovery_view_injection_skipped=true"
+        )
+        progress.info(
+            "ecmp_recovery_view_skip_reason="
+            f"scenario={scenario_name} "
+            "does_not_require_ecmp_member_recovery"
+    )
+
     progress.info(f"ui_report_path={ui_report_path}")
     progress.info(f"ui_report_elapsed_sec={time.time() - t0:.1f}")
     progress.stage("VALIDATION_AND_CLASSIFICATION")
@@ -3570,6 +3755,11 @@ def run_single_scenario(
         ).build()
     )
 
+    # Convert the normalized result before using it below.
+    engineering_validation = (
+        engineering_validation_result.to_dict()
+    )
+
     progress.info(
         "engineering_validation_overall_status="
         f"{engineering_validation['overall_status']}"
@@ -3588,9 +3778,6 @@ def run_single_scenario(
             f"{engineering_validation[domain]['status']}"
         )
 
-    engineering_validation = (
-        engineering_validation_result.to_dict()
-    )
     print(f"Validation Status   : {final_status}")
     print(f"Event Execution OK  : {'YES' if event_ok else 'NO'}")
     print(f"Impact Observed     : {'YES' if impact_ok else 'NO'}")
@@ -4230,6 +4417,67 @@ def parse_args() -> argparse.Namespace:
     )
 
 
+    parser.add_argument(
+        "--route-churn-prefix",
+        default=None,
+        help=(
+            "Explicit connected IPv4 prefix used for route churn. "
+            "Example: 2.255.250.7/32."
+        ),
+    )
+
+    parser.add_argument(
+        "--route-churn-unit",
+        type=int,
+        default=997,
+        help="Temporary lo0 unit used for route churn. Default: 997.",
+    )
+
+    parser.add_argument(
+        "--route-churn-repeat",
+        type=int,
+        default=1,
+        help="Number of advertise/withdraw cycles. Default: 1.",
+    )
+
+    parser.add_argument(
+        "--route-churn-hold-seconds",
+        type=int,
+        default=5,
+        help=(
+            "Seconds to keep the route advertised during each cycle. "
+            "Default: 5."
+        ),
+    )
+
+    parser.add_argument(
+        "--route-churn-recovery-seconds",
+        type=int,
+        default=5,
+        help=(
+            "Seconds to wait after withdrawal before validation. "
+            "Default: 5."
+        ),
+    )
+
+    parser.add_argument(
+        "--route-churn-peer",
+        default=None,
+        help=(
+            "Optional BGP peer used to verify prefix advertisement."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-route-churn-bgp-verification",
+        action="store_true",
+        help=(
+            "Skip peer-specific BGP advertisement verification. "
+            "Local RIB advertise/withdraw validation remains enabled."
+        ),
+    )
+
+
     args = parser.parse_args()
     normalize_phase_timing_args(args)
 
@@ -4284,6 +4532,48 @@ def parse_args() -> argparse.Namespace:
     # Ensure post_wait is not shorter than post_window
     if args.post_wait < args.post_window:
         args.post_wait = args.post_window
+
+
+    if args.scenario == "route_churn_single":
+        if not args.route_churn_prefix:
+            parser.error(
+                "route_churn_single requires "
+                "--route-churn-prefix"
+            )
+
+        selected_nodes = [
+            value.strip()
+            for value in (
+                args.selected_nodes or ""
+            ).split(",")
+            if value.strip()
+        ]
+
+        if len(selected_nodes) != 1:
+            parser.error(
+                "route_churn_single requires exactly one "
+                "node in --selected-nodes"
+            )
+
+        if args.route_churn_repeat < 1:
+            parser.error(
+                "--route-churn-repeat must be >= 1"
+            )
+
+        if args.route_churn_unit < 0:
+            parser.error(
+                "--route-churn-unit must be >= 0"
+            )
+
+        if args.route_churn_hold_seconds < 0:
+            parser.error(
+                "--route-churn-hold-seconds must be >= 0"
+            )
+
+        if args.route_churn_recovery_seconds < 0:
+            parser.error(
+                "--route-churn-recovery-seconds must be >= 0"
+        )
 
     return args
 
@@ -4349,6 +4639,15 @@ def main() -> int:
                 flap_repeat=args.flap_repeat,
                 flap_down_seconds=args.flap_down_seconds,
                 flap_up_wait_seconds=args.flap_up_wait_seconds,
+                route_churn_prefix=args.route_churn_prefix,
+                route_churn_unit=args.route_churn_unit,
+                route_churn_repeat=args.route_churn_repeat,
+                route_churn_hold_seconds=args.route_churn_hold_seconds,
+                route_churn_recovery_seconds=args.route_churn_recovery_seconds,
+                route_churn_peer=args.route_churn_peer,
+                route_churn_verify_bgp=(
+                    not args.no_route_churn_bgp_verification
+                ),
 
             )
         

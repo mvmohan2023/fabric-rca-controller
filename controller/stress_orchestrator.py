@@ -57,6 +57,12 @@ from controller.stress_actions.bgp import (
 
 from controller.utils import atomic_write_json
 
+from controller.stress_actions.route import (
+    run_route_churn,
+)
+
+
+
 BASE_DIR = Path("/root/fabric-controller")
 ARTIFACTS_DIR = BASE_DIR / "artifacts"
 OUTPUT_DIR = ARTIFACTS_DIR / "orchestrator"
@@ -175,6 +181,7 @@ def parse_args():
             "bgp_neighbor_shutdown",
             "bgp_neighbor_restore",
             "bgp_neighbor_flap",
+            "route_churn",
         ],
         help="Stress mode to execute.",
     )
@@ -326,6 +333,44 @@ def parse_args():
     parser.add_argument("--flap-repeat", type=int, default=5)
     parser.add_argument("--flap-down-seconds", type=int, default=10)
     parser.add_argument("--flap-up-wait-seconds", type=int, default=60)
+    parser.add_argument(
+        "--route-churn-prefix",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--route-churn-unit",
+        type=int,
+        default=997,
+    )
+
+    parser.add_argument(
+        "--route-churn-repeat",
+        type=int,
+        default=1,
+    )
+
+    parser.add_argument(
+        "--route-churn-hold-seconds",
+        type=int,
+        default=5,
+    )
+
+    parser.add_argument(
+        "--route-churn-recovery-seconds",
+        type=int,
+        default=5,
+    )
+
+    parser.add_argument(
+        "--route-churn-peer",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--no-route-churn-bgp-verification",
+        action="store_true",
+    )
     return parser.parse_args()
 
 
@@ -600,6 +645,47 @@ def _execute_interface_hold_restore(context: StressActionContext):
         timeout=context.option("timeout", 30),
     )
 
+
+def _execute_route_churn(
+    context: StressActionContext,
+):
+    return run_route_churn(
+        node=context.target.get("node"),
+        inventory=context.inventory,
+        prefix=context.option(
+            "route_churn_prefix"
+        ),
+        unit=context.option(
+            "route_churn_unit",
+            997,
+        ),
+        repeat=context.option(
+            "route_churn_repeat",
+            1,
+        ),
+        hold_seconds=context.option(
+            "route_churn_hold_seconds",
+            5,
+        ),
+        recovery_seconds=context.option(
+            "route_churn_recovery_seconds",
+            5,
+        ),
+        peer_ip=context.option(
+            "route_churn_peer"
+        ),
+        verify_bgp_advertisement=context.option(
+            "route_churn_verify_bgp",
+            True,
+        ),
+        timeout=context.option(
+            "timeout",
+            120,
+        ),
+    )
+
+
+
 def register_builtin_stress_actions() -> None:
     """Register built-in stress handlers.
 
@@ -618,6 +704,7 @@ def register_builtin_stress_actions() -> None:
         "bgp_neighbor_shutdown": _execute_bgp_neighbor_shutdown,
         "bgp_neighbor_restore": _execute_bgp_neighbor_restore,
         "bgp_neighbor_flap": _execute_bgp_neighbor_flap,
+        "route_churn": _execute_route_churn,
     }
 
     for mode, handler in builtin_actions.items():
@@ -665,8 +752,15 @@ def parse_targets(
         raw_items = [item.strip() for item in targets_arg.split(",") if item.strip()]
 
         for item in raw_items:
-            if mode == "bgp_clear":
-                targets.append({"node": item})
+            if mode in (
+                "bgp_clear",
+                "route_churn",
+            ):
+                targets.append({
+                    "target_type": "node",
+                    "node": item,
+                })
+
             elif mode in interface_modes:
                 if "|" not in item:
                     raise ValueError(
@@ -687,10 +781,20 @@ def parse_targets(
                     "interface": intf,
                 })
     else:
-        if mode == "bgp_clear":
+        if mode in (
+            "bgp_clear",
+            "route_churn",
+        ):
             if not node:
-                raise ValueError("For bgp_clear provide --node or --targets")
-            targets.append({"node": node})
+                raise ValueError(
+                    f"For {mode} provide --node or --targets"
+                )
+
+            targets.append({
+                "target_type": "node",
+                "node": node,
+            })
+
         elif mode in interface_modes:
             if not node or not interface:
                 raise ValueError(f"For {mode} provide --node/--interface or --targets")
@@ -745,6 +849,13 @@ def run_single_stress_target(
     flap_repeat=5,
     flap_down_seconds=10,
     flap_up_wait_seconds=60,
+    route_churn_prefix=None,
+    route_churn_unit=997,
+    route_churn_repeat=1,
+    route_churn_hold_seconds=5,
+    route_churn_recovery_seconds=5,
+    route_churn_peer=None,
+    route_churn_verify_bgp=True,
 ):
 
     validate_target_for_stress_mode(stress_mode, target)
@@ -772,6 +883,13 @@ def run_single_stress_target(
             "flap_repeat": flap_repeat,
             "flap_down_seconds": flap_down_seconds,
             "flap_up_wait_seconds": flap_up_wait_seconds,
+            "route_churn_prefix": route_churn_prefix,
+            "route_churn_unit": route_churn_unit,
+            "route_churn_repeat": route_churn_repeat,
+            "route_churn_hold_seconds": route_churn_hold_seconds,
+            "route_churn_recovery_seconds": route_churn_recovery_seconds,
+            "route_churn_peer": route_churn_peer,
+            "route_churn_verify_bgp": route_churn_verify_bgp,
         },
     )
 
@@ -821,6 +939,13 @@ def run_parallel_stress_actions(
     flap_repeat=5,
     flap_down_seconds=10,
     flap_up_wait_seconds=60,
+    route_churn_prefix=None,
+    route_churn_unit=997,
+    route_churn_repeat=1,
+    route_churn_hold_seconds=5,
+    route_churn_recovery_seconds=5,
+    route_churn_peer=None,
+    route_churn_verify_bgp=True,
 ):
     print(f"\n[STRESS-GROUP] mode={stress_mode} parallel={parallel} targets={len(targets)}")
 
@@ -860,7 +985,13 @@ def run_parallel_stress_actions(
                 flap_repeat,
                 flap_down_seconds,
                 flap_up_wait_seconds,
-
+                route_churn_prefix,
+                route_churn_unit,
+                route_churn_repeat,
+                route_churn_hold_seconds,
+                route_churn_recovery_seconds,
+                route_churn_peer,
+                route_churn_verify_bgp,
             ): target
             for target in targets
         }
@@ -913,6 +1044,13 @@ def run_stress_action(
     flap_repeat=5,
     flap_down_seconds=10,
     flap_up_wait_seconds=60,
+    route_churn_prefix=None,
+    route_churn_unit=997,
+    route_churn_repeat=1,
+    route_churn_hold_seconds=5,
+    route_churn_recovery_seconds=5,
+    route_churn_peer=None,
+    route_churn_verify_bgp=True,
 ):
     try:
         targets = parse_targets(
@@ -950,6 +1088,13 @@ def run_stress_action(
         flap_repeat=flap_repeat,
         flap_down_seconds=flap_down_seconds,
         flap_up_wait_seconds=flap_up_wait_seconds,
+        route_churn_unit=route_churn_unit,
+        route_churn_prefix=route_churn_prefix,
+        route_churn_repeat=route_churn_repeat,
+        route_churn_hold_seconds=route_churn_hold_seconds,
+        route_churn_recovery_seconds=route_churn_recovery_seconds,
+        route_churn_peer=route_churn_peer,
+        route_churn_verify_bgp=route_churn_verify_bgp,
     )
 
 
@@ -1680,6 +1825,15 @@ def main():
                                 flap_repeat=args.flap_repeat,
                                 flap_down_seconds=args.flap_down_seconds,
                                 flap_up_wait_seconds=args.flap_up_wait_seconds,
+                                route_churn_prefix=args.route_churn_prefix,
+                                route_churn_unit=args.route_churn_unit,
+                                route_churn_repeat=args.route_churn_repeat,
+                                route_churn_hold_seconds=args.route_churn_hold_seconds,
+                                route_churn_recovery_seconds=args.route_churn_recovery_seconds,
+                                route_churn_peer=args.route_churn_peer,
+                                route_churn_verify_bgp=(
+                                    not args.no_route_churn_bgp_verification
+                                ),
                             )
 
                             if stress_result["status"] != "pass":

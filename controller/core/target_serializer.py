@@ -50,7 +50,10 @@ def infer_target_type(
 
     mode = str(stress_mode or "").strip()
 
-    if mode == "bgp_clear":
+    if mode in {
+        "bgp_clear",
+        "route_churn",
+    }:
         return "node"
 
     if mode.startswith("bgp_neighbor_"):
@@ -151,9 +154,16 @@ def serialize_target(
     )
 
     # bgp_clear retains its existing node-only --targets contract.
-    if mode == "bgp_clear":
-        return _required_text(target, "node")
 
+    # Node-only modes retain the existing --targets contract.
+    if mode in {
+        "bgp_clear",
+        "route_churn",
+    }:
+        return _required_text(
+            target,
+            "node",
+        )
     return serialize_generic_target(
         target_type,
         target,
@@ -165,4 +175,11 @@ def uses_generic_target_option(
 ) -> bool:
     """Return whether this mode should use repeated --target arguments."""
 
-    return str(stress_mode or "").strip() != "bgp_clear"
+    mode = str(
+        stress_mode or ""
+    ).strip()
+
+    return mode not in {
+        "bgp_clear",
+        "route_churn",
+    }
