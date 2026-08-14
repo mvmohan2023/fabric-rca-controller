@@ -38,6 +38,11 @@ from controller.targets.bgp_neighbor import (
     resolve_bgp_neighbors_for_node,
 )
 
+from controller.targets.bfd_session import (
+    resolve_bfd_session,
+)
+
+
 from controller.validation import (
     EngineeringValidationBuilder,
     load_post_sample_health,
@@ -380,6 +385,102 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "rca": (
                 "RCA should correlate the selected BGP peer flap with "
                 "control-plane and traffic evidence."
+            ),
+        },
+    },
+    "bfd_session_flap_single": {
+        "stress_mode": "bfd_session_flap",
+        "description": (
+            "Disrupt and recover one selected BFD session while "
+            "validating bounded control-plane impact and recovery."
+        ),
+        "tier": "production_basic",
+        "maturity": "beta",
+        "release_gate": True,
+        "recovery_slo_seconds": 60,
+
+        "target_type": "bfd_session",
+        "requires_explicit_target": True,
+
+        "selection_policy": {
+            "selection_mode": "manual",
+            "session_role": "control_plane",
+            "blast_radius": "single_session",
+            "max_targets": 1,
+            "prefer_healthy": True,
+        },
+
+        "expected_classifications": [
+            "expected-transient-control-impact",
+            "expected-control-plane-recovery",
+        ],
+
+        "expected_behavior": {
+            "network": (
+                "The selected BFD session transitions from Up "
+                "to Down and returns to Up within the configured "
+                "recovery window."
+            ),
+            "routing": (
+                "Any dependent routing reaction must remain "
+                "bounded and recover after BFD restoration."
+            ),
+            "traffic": (
+                "Any traffic impact must remain bounded and "
+                "recover within the configured recovery window."
+            ),
+            "telemetry": (
+                "BFD state transition and associated routing "
+                "reconvergence should be observable."
+            ),
+            "rca": (
+                "RCA should correlate the selected BFD peer "
+                "transition with control-plane and traffic evidence."
+            ),
+        },
+    },
+    "route_withdraw_single": {
+        "stress_mode": "route_withdraw",
+        "description": (
+            "Withdraw and restore one controlled connected prefix "
+            "while BGP sessions remain established, validating "
+            "route-loss convergence, traffic impact, and clean recovery."
+        ),
+        "tier": "production_basic",
+        "maturity": "beta",
+        "release_gate": True,
+        "recovery_slo_seconds": 60,
+
+        "requires_selected_nodes": True,
+        "node_only_targets": True,
+
+        "selection_policy": {
+            "selection_mode": "manual",
+            "session_role": "control_plane",
+            "blast_radius": "single_node",
+            "max_targets": 1,
+            "prefer_healthy": True,
+        },
+
+        "expected_classifications": [
+            "expected-transient-control-impact",
+            "expected-control-plane-recovery",
+        ],
+
+        "expected_behavior": {
+            "network": (
+                "The controlled connected prefix is withdrawn "
+                "and restored while the BGP session remains "
+                "established."
+            ),
+            "traffic": (
+                "Any traffic impact must remain bounded and "
+                "recover within the configured recovery window."
+            ),
+            "recovery": (
+                "The controlled prefix must return to the "
+                "local RIB and BGP advertisement state "
+                "after restoration."
             ),
         },
     },
@@ -1350,9 +1451,11 @@ def resolve_targets_for_scenario(
     explicit_interface: Optional[str],
     explicit_targets: Optional[str],
     explicit_bgp_targets: Optional[str],
+    explicit_bfd_targets: Optional[str],
     selected_nodes_raw: Optional[str],
     one_per_node: bool,
 ) -> List[Dict[str, str]]:
+
     scenario = SCENARIOS[scenario_name]
 
 
@@ -1404,6 +1507,70 @@ def resolve_targets_for_scenario(
         ):
             raise ValueError(
                 f"{scenario_name} requires exactly one BGP target"
+            )
+
+        return targets
+
+
+    if explicit_bfd_targets:
+        if scenario.get("target_type") != "bfd_session":
+            raise ValueError(
+                f"Scenario '{scenario_name}' does not accept "
+                "--bfd-targets"
+            )
+
+        targets: List[Dict[str, str]] = []
+
+        for raw_target in explicit_bfd_targets.split(","):
+            value = raw_target.strip()
+
+            if not value:
+                continue
+
+            parts = value.split("|", 1)
+
+            if len(parts) != 2:
+                raise ValueError(
+                    f"Invalid BFD target '{value}'. "
+                    "Expected node|peer_ip"
+                )
+
+            node, peer_ip = [
+                part.strip()
+                for part in parts
+            ]
+
+            if not node or not peer_ip:
+                raise ValueError(
+                    f"Invalid BFD target '{value}'. "
+                    "Both node and peer_ip are required"
+                )
+
+            targets.append(
+                {
+                    "target_type": "bfd_session",
+                    "node": node,
+                    "peer_ip": peer_ip,
+                }
+            )
+
+        if not targets:
+            raise ValueError(
+                "At least one valid --bfd-targets "
+                "entry is required"
+            )
+
+        if (
+            scenario.get(
+                "selection_policy",
+                {},
+            ).get("max_targets")
+            == 1
+            and len(targets) != 1
+        ):
+            raise ValueError(
+                f"{scenario_name} requires exactly "
+                "one BFD target"
             )
 
         return targets
@@ -1465,6 +1632,13 @@ def resolve_targets_for_scenario(
 
         return resolved_bgp_targets
 
+    if scenario.get("target_type") == "bfd_session":
+        raise ValueError(
+            f"{scenario_name} currently requires "
+            "--bfd-targets node|peer_ip. "
+            "Automatic BFD discovery will be enabled "
+            "after the live BFD-session collector is added."
+        )
 
     # Manual target always wins
     if explicit_node and explicit_interface:
@@ -1723,6 +1897,14 @@ def run_stress_event(
     route_churn_recovery_seconds=5,
     route_churn_peer=None,
     route_churn_verify_bgp=True,
+    route_withdraw_prefix=None,
+    route_withdraw_unit=0,
+    route_withdraw_hold_seconds=5,
+    route_withdraw_recovery_seconds=5,
+    route_withdraw_peer=None,
+    route_withdraw_verify_bgp=True,
+    bfd_hold_seconds=5,
+    bfd_recovery_seconds=10,
 ) -> str:
     stress_mode = SCENARIOS[scenario_name]["stress_mode"]
 
@@ -1861,6 +2043,53 @@ def run_stress_event(
         cmd.append(
             "--no-route-churn-bgp-verification"
         )
+
+    if route_withdraw_prefix:
+        cmd.extend([
+            "--route-withdraw-prefix",
+            str(route_withdraw_prefix),
+        ])
+
+    if route_withdraw_unit is not None:
+        cmd.extend([
+            "--route-withdraw-unit",
+            str(route_withdraw_unit),
+        ])
+
+    if route_withdraw_hold_seconds is not None:
+        cmd.extend([
+            "--route-withdraw-hold-seconds",
+            str(route_withdraw_hold_seconds),
+        ])
+
+    if route_withdraw_recovery_seconds is not None:
+        cmd.extend([
+            "--route-withdraw-recovery-seconds",
+            str(route_withdraw_recovery_seconds),
+        ])
+
+    if route_withdraw_peer:
+        cmd.extend([
+            "--route-withdraw-peer",
+            str(route_withdraw_peer),
+        ])
+
+    if not route_withdraw_verify_bgp:
+        cmd.append(
+            "--no-route-withdraw-bgp-verification"
+    )
+
+    if bfd_hold_seconds is not None:
+        cmd.extend([
+            "--bfd-hold-seconds",
+            str(bfd_hold_seconds),
+        ])
+
+    if bfd_recovery_seconds is not None:
+        cmd.extend([
+            "--bfd-recovery-seconds",
+            str(bfd_recovery_seconds),
+        ])
 
     print(
         "[FAULT-INJECTION] stress orchestrator command:",
@@ -3241,6 +3470,14 @@ def run_single_scenario(
     route_churn_recovery_seconds=5,
     route_churn_peer=None,
     route_churn_verify_bgp=True,
+    route_withdraw_prefix=None,
+    route_withdraw_unit=0,
+    route_withdraw_hold_seconds=5,
+    route_withdraw_recovery_seconds=5,
+    route_withdraw_peer=None,
+    route_withdraw_verify_bgp=True,
+    bfd_hold_seconds=5,
+    bfd_recovery_seconds=10,
 ) -> Dict[str, Any]:
     scenario = SCENARIOS[scenario_name]
 
@@ -3291,6 +3528,7 @@ def run_single_scenario(
         explicit_interface=interface,
         explicit_targets=targets,
         explicit_bgp_targets=bgp_targets,
+        explicit_bfd_targets=bfd_targets,
         selected_nodes_raw=selected_nodes,
         one_per_node=one_per_node,
     )
@@ -3387,6 +3625,14 @@ def run_single_scenario(
         route_churn_recovery_seconds=route_churn_recovery_seconds,
         route_churn_peer=route_churn_peer,
         route_churn_verify_bgp=route_churn_verify_bgp,
+        route_withdraw_prefix=route_withdraw_prefix,
+        route_withdraw_unit=route_withdraw_unit,
+        route_withdraw_hold_seconds=route_withdraw_hold_seconds,
+        route_withdraw_recovery_seconds=route_withdraw_recovery_seconds,
+        route_withdraw_peer=route_withdraw_peer,
+        route_withdraw_verify_bgp=route_withdraw_verify_bgp,
+        bfd_hold_seconds=bfd_hold_seconds,
+        bfd_recovery_seconds=bfd_recovery_seconds,
     )
     if scenario_name == "ecmp_member_degraded_hold_restore":
         degraded_event_artifact = BASE_DIR / "artifacts" / "campaigns" / rca_run_id / "degraded_member_hold_event.json"
@@ -3996,6 +4242,7 @@ def run_suite(
     interface: Optional[str],
     targets: Optional[str],
     bgp_targets: Optional[str] = None,
+    bfd_targets: Optional[str] = None,
     selected_nodes: Optional[str],
     one_per_node: bool,
     ui_server_url: str,
@@ -4416,6 +4663,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--bfd-targets",
+        default=None,
+        help=(
+            "Explicit BFD session target(s) using "
+            "node|peer_ip. "
+            "Example: leaf1|2001::1:0:11:0"
+        ),
+    )
+
 
     parser.add_argument(
         "--route-churn-prefix",
@@ -4477,7 +4734,68 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--route-withdraw-prefix",
+        default=None,
+        help=(
+            "Controlled IPv4 prefix used by "
+            "route_withdraw_single."
+        ),
+    )
 
+    parser.add_argument(
+        "--route-withdraw-unit",
+        type=int,
+        default=0,
+        help="Loopback logical unit used for route withdrawal.",
+    )
+
+    parser.add_argument(
+        "--route-withdraw-hold-seconds",
+        type=int,
+        default=5,
+        help="Seconds to keep the controlled route withdrawn.",
+    )
+
+    parser.add_argument(
+        "--route-withdraw-recovery-seconds",
+        type=int,
+        default=5,
+        help=(
+            "Seconds to wait after restoring the "
+            "controlled route."
+        ),
+    )
+
+    parser.add_argument(
+        "--route-withdraw-peer",
+        default=None,
+        help=(
+            "BGP peer used to verify route advertisement, "
+            "withdrawal, and recovery."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-route-withdraw-bgp-verification",
+        action="store_true",
+        help=(
+            "Disable BGP advertisement verification for "
+            "route_withdraw_single."
+        ),
+    )
+
+    parser.add_argument(
+        "--bfd-hold-seconds",
+        type=int,
+        default=5,
+    )
+
+    parser.add_argument(
+        "--bfd-recovery-seconds",
+        type=int,
+        default=10,
+    )
     args = parser.parse_args()
     normalize_phase_timing_args(args)
 
@@ -4575,6 +4893,38 @@ def parse_args() -> argparse.Namespace:
                 "--route-churn-recovery-seconds must be >= 0"
         )
 
+    if args.scenario == "route_withdraw_single":
+        if not args.route_withdraw_prefix:
+            parser.error(
+                "route_withdraw_single requires "
+                "--route-withdraw-prefix"
+            )
+
+        if args.route_withdraw_unit < 0:
+            parser.error(
+                "--route-withdraw-unit must be >= 0"
+            )
+
+        if args.route_withdraw_hold_seconds < 0:
+            parser.error(
+                "--route-withdraw-hold-seconds must be >= 0"
+            )
+
+        if args.route_withdraw_recovery_seconds < 0:
+            parser.error(
+                "--route-withdraw-recovery-seconds must be >= 0"
+            )
+
+        if (
+            not args.no_route_withdraw_bgp_verification
+            and not args.route_withdraw_peer
+        ):
+            parser.error(
+                "route_withdraw_single requires "
+                "--route-withdraw-peer when BGP "
+                "verification is enabled"
+            )
+
     return args
 
 
@@ -4610,6 +4960,7 @@ def main() -> int:
                 interface=args.interface,
                 targets=args.targets,
                 bgp_targets=args.bgp_targets,
+                bfd_targets=args.bfd_targets,
                 selected_nodes=args.selected_nodes,
                 one_per_node=args.one_per_node,
                 ui_server_url=args.ui_server_url,
@@ -4648,6 +4999,16 @@ def main() -> int:
                 route_churn_verify_bgp=(
                     not args.no_route_churn_bgp_verification
                 ),
+                route_withdraw_prefix=args.route_withdraw_prefix,
+                route_withdraw_unit=args.route_withdraw_unit,
+                route_withdraw_hold_seconds=args.route_withdraw_hold_seconds,
+                route_withdraw_recovery_seconds=args.route_withdraw_recovery_seconds,
+                route_withdraw_peer=args.route_withdraw_peer,
+                route_withdraw_verify_bgp=(
+                    not args.no_route_withdraw_bgp_verification
+                ),
+                bfd_hold_seconds=args.bfd_hold_seconds,
+                bfd_recovery_seconds=args.bfd_recovery_seconds,
 
             )
         

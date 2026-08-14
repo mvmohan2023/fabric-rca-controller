@@ -61,6 +61,14 @@ from controller.stress_actions.route import (
     run_route_churn,
 )
 
+from controller.stress_actions.route import (
+    run_route_churn,
+    run_route_withdraw,
+)
+
+from controller.stress_actions.bfd import (
+    run_bfd_session_flap,
+)
 
 
 BASE_DIR = Path("/root/fabric-controller")
@@ -147,6 +155,14 @@ def parse_target_spec(spec):
             "peer_ip": resource,
         }
 
+
+    if target_type == "bfd_session":
+        return {
+            "target_type": "bfd_session",
+            "node": node,
+            "peer_ip": resource,
+        }
+
     if target_type == "process":
         return {
             "target_type": "process",
@@ -182,6 +198,8 @@ def parse_args():
             "bgp_neighbor_restore",
             "bgp_neighbor_flap",
             "route_churn",
+            "route_withdraw",
+            "bfd_session_flap",
         ],
         help="Stress mode to execute.",
     )
@@ -371,6 +389,50 @@ def parse_args():
         "--no-route-churn-bgp-verification",
         action="store_true",
     )
+
+    parser.add_argument(
+        "--route-withdraw-prefix",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--route-withdraw-unit",
+        type=int,
+        default=0,
+    )
+
+    parser.add_argument(
+        "--route-withdraw-hold-seconds",
+        type=int,
+        default=5,
+    )
+
+    parser.add_argument(
+        "--route-withdraw-recovery-seconds",
+        type=int,
+        default=5,
+    )
+
+    parser.add_argument(
+        "--route-withdraw-peer",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--no-route-withdraw-bgp-verification",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--bfd-hold-seconds",
+        type=int,
+        default=5,
+    )
+
+    parser.add_argument(
+        "--bfd-recovery-seconds",
+        type=int,
+        default=10,
+    )
     return parser.parse_args()
 
 
@@ -511,6 +573,30 @@ def _execute_noop(context: StressActionContext):
     )
 
 
+def _execute_bfd_session_flap(
+    context: StressActionContext,
+):
+    return run_bfd_session_flap(
+        node=context.target.get("node"),
+        inventory=context.inventory,
+        peer_ip=context.target.get(
+            "peer_ip"
+        ),
+        hold_seconds=context.option(
+            "bfd_hold_seconds",
+            5,
+        ),
+        recovery_seconds=context.option(
+            "bfd_recovery_seconds",
+            10,
+        ),
+        timeout=context.option(
+            "timeout",
+            120,
+        ),
+    )
+
+
 def _execute_bgp_clear(context: StressActionContext):
     return run_bgp_clear(
         node=context.target.get("node"),
@@ -646,6 +732,41 @@ def _execute_interface_hold_restore(context: StressActionContext):
     )
 
 
+def _execute_route_withdraw(
+    context: StressActionContext,
+):
+    return run_route_withdraw(
+        node=context.target.get("node"),
+        inventory=context.inventory,
+        prefix=context.option(
+            "route_withdraw_prefix"
+        ),
+        unit=context.option(
+            "route_withdraw_unit",
+            0,
+        ),
+        hold_seconds=context.option(
+            "route_withdraw_hold_seconds",
+            5,
+        ),
+        recovery_seconds=context.option(
+            "route_withdraw_recovery_seconds",
+            5,
+        ),
+        peer_ip=context.option(
+            "route_withdraw_peer"
+        ),
+        verify_bgp_advertisement=context.option(
+            "route_withdraw_verify_bgp",
+            True,
+        ),
+        timeout=context.option(
+            "timeout",
+            120,
+        ),
+    )
+
+
 def _execute_route_churn(
     context: StressActionContext,
 ):
@@ -705,6 +826,8 @@ def register_builtin_stress_actions() -> None:
         "bgp_neighbor_restore": _execute_bgp_neighbor_restore,
         "bgp_neighbor_flap": _execute_bgp_neighbor_flap,
         "route_churn": _execute_route_churn,
+        "route_withdraw": _execute_route_withdraw,
+        "bfd_session_flap": _execute_bfd_session_flap,
     }
 
     for mode, handler in builtin_actions.items():
@@ -755,6 +878,7 @@ def parse_targets(
             if mode in (
                 "bgp_clear",
                 "route_churn",
+                "route_withdraw",
             ):
                 targets.append({
                     "target_type": "node",
@@ -784,6 +908,8 @@ def parse_targets(
         if mode in (
             "bgp_clear",
             "route_churn",
+            "route_withdraw",
+
         ):
             if not node:
                 raise ValueError(
@@ -856,6 +982,14 @@ def run_single_stress_target(
     route_churn_recovery_seconds=5,
     route_churn_peer=None,
     route_churn_verify_bgp=True,
+    route_withdraw_prefix=None,
+    route_withdraw_unit=0,
+    route_withdraw_hold_seconds=5,
+    route_withdraw_recovery_seconds=5,
+    route_withdraw_peer=None,
+    route_withdraw_verify_bgp=True,
+    bfd_hold_seconds=5,
+    bfd_recovery_seconds=10,
 ):
 
     validate_target_for_stress_mode(stress_mode, target)
@@ -890,6 +1024,14 @@ def run_single_stress_target(
             "route_churn_recovery_seconds": route_churn_recovery_seconds,
             "route_churn_peer": route_churn_peer,
             "route_churn_verify_bgp": route_churn_verify_bgp,
+            "route_withdraw_prefix":route_withdraw_prefix,
+            "route_withdraw_unit":route_withdraw_unit,
+            "route_withdraw_hold_seconds":route_withdraw_hold_seconds,
+            "route_withdraw_recovery_seconds":route_withdraw_recovery_seconds,
+            "route_withdraw_peer":route_withdraw_peer,
+            "route_withdraw_verify_bgp":route_withdraw_verify_bgp,
+            "bfd_hold_seconds": bfd_hold_seconds,
+            "bfd_recovery_seconds": bfd_recovery_seconds,
         },
     )
 
@@ -946,6 +1088,14 @@ def run_parallel_stress_actions(
     route_churn_recovery_seconds=5,
     route_churn_peer=None,
     route_churn_verify_bgp=True,
+    route_withdraw_prefix=None,
+    route_withdraw_unit=0,
+    route_withdraw_hold_seconds=5,
+    route_withdraw_recovery_seconds=5,
+    route_withdraw_peer=None,
+    route_withdraw_verify_bgp=True,
+    bfd_hold_seconds=5,
+    bfd_recovery_seconds=10,
 ):
     print(f"\n[STRESS-GROUP] mode={stress_mode} parallel={parallel} targets={len(targets)}")
 
@@ -992,6 +1142,14 @@ def run_parallel_stress_actions(
                 route_churn_recovery_seconds,
                 route_churn_peer,
                 route_churn_verify_bgp,
+                route_withdraw_prefix,
+                route_withdraw_unit,
+                route_withdraw_hold_seconds,
+                route_withdraw_recovery_seconds,
+                route_withdraw_peer,
+                route_withdraw_verify_bgp,
+                bfd_hold_seconds,
+                bfd_recovery_seconds,
             ): target
             for target in targets
         }
@@ -1051,6 +1209,14 @@ def run_stress_action(
     route_churn_recovery_seconds=5,
     route_churn_peer=None,
     route_churn_verify_bgp=True,
+    route_withdraw_prefix=None,
+    route_withdraw_unit=0,
+    route_withdraw_hold_seconds=5,
+    route_withdraw_recovery_seconds=5,
+    route_withdraw_peer=None,
+    route_withdraw_verify_bgp=True,
+    bfd_hold_seconds=5,
+    bfd_recovery_seconds=10,
 ):
     try:
         targets = parse_targets(
@@ -1095,6 +1261,12 @@ def run_stress_action(
         route_churn_recovery_seconds=route_churn_recovery_seconds,
         route_churn_peer=route_churn_peer,
         route_churn_verify_bgp=route_churn_verify_bgp,
+        route_withdraw_prefix=route_withdraw_prefix,
+        route_withdraw_unit=route_withdraw_unit,
+        route_withdraw_hold_seconds=route_withdraw_hold_seconds,
+        route_withdraw_recovery_seconds=route_withdraw_recovery_seconds,
+        route_withdraw_peer=route_withdraw_peer,
+        route_withdraw_verify_bgp=route_withdraw_verify_bgp,
     )
 
 
@@ -1833,6 +2005,14 @@ def main():
                                 route_churn_peer=args.route_churn_peer,
                                 route_churn_verify_bgp=(
                                     not args.no_route_churn_bgp_verification
+                                ),
+                                route_withdraw_prefix=args.route_withdraw_prefix,
+                                route_withdraw_unit=args.route_withdraw_unit,
+                                route_withdraw_hold_seconds=args.route_withdraw_hold_seconds,
+                                route_withdraw_recovery_seconds=args.route_withdraw_recovery_seconds,
+                                route_withdraw_peer=args.route_withdraw_peer,
+                                route_withdraw_verify_bgp=(
+                                    not args.no_route_withdraw_bgp_verification
                                 ),
                             )
 

@@ -169,6 +169,33 @@ def _route_advertised(
     return advertised, step
 
 
+def _route_not_advertised(
+    *,
+    host: str,
+    user: str,
+    password: str,
+    peer_ip: str,
+    network_prefix: str,
+    step_name: str,
+    timeout: int,
+) -> tuple[bool, Dict[str, Any]]:
+    """Check whether a prefix is no longer advertised to one BGP peer."""
+
+    advertised, step = _route_advertised(
+        host=host,
+        user=user,
+        password=password,
+        peer_ip=peer_ip,
+        network_prefix=network_prefix,
+        step_name=step_name,
+        timeout=timeout,
+    )
+
+    return not advertised, step
+
+
+
+
 def run_route_churn(
     *,
     node: str,
@@ -730,3 +757,529 @@ def run_route_churn(
         "steps": steps,
         "iterations": iterations,
     }
+
+
+def run_route_withdraw(
+    *,
+    node: str,
+    inventory: Dict[str, Any],
+    prefix: str,
+    unit: int = 0,
+    hold_seconds: int = 5,
+    recovery_seconds: int = 5,
+    peer_ip: Optional[str] = None,
+    verify_bgp_advertisement: bool = True,
+    timeout: int = 120,
+) -> Dict[str, Any]:
+    """Withdraw and restore one controlled connected prefix.
+
+    Lifecycle:
+
+        preflight
+            -> test address must not already exist
+            -> test route must not already exist
+
+        baseline
+            -> add controlled prefix
+            -> verify local route
+            -> verify BGP advertisement
+
+        stress
+            -> deactivate exact address
+            -> verify local withdrawal
+            -> verify BGP withdrawal
+
+        recovery
+            -> activate exact address
+            -> verify local route returns
+            -> verify BGP advertisement returns
+
+        cleanup
+            -> delete exact temporary address
+    """
+
+    print(
+        f"\n[STRESS] mode=route_withdraw "
+        f"node={node} prefix={prefix} unit={unit}"
+    )
+
+    steps: List[Dict[str, Any]] = []
+
+    if not node:
+        return {
+            "stress_mode": "route_withdraw",
+            "status": "fail",
+            "details": "node must be provided",
+            "steps": steps,
+            "cleanup_ok": False,
+        }
+
+    try:
+        address = _validate_route_churn_prefix(prefix)
+    except Exception as exc:
+        return {
+            "stress_mode": "route_withdraw",
+            "status": "fail",
+            "details": str(exc),
+            "target": {"node": node},
+            "steps": steps,
+            "cleanup_ok": False,
+        }
+
+    if unit < 0:
+        return {
+            "stress_mode": "route_withdraw",
+            "status": "fail",
+            "details": (
+                "route_withdraw_unit must be greater "
+                "than or equal to zero"
+            ),
+            "target": {"node": node},
+            "steps": steps,
+            "cleanup_ok": False,
+        }
+
+    if hold_seconds < 0:
+        return {
+            "stress_mode": "route_withdraw",
+            "status": "fail",
+            "details": (
+                "route_withdraw_hold_seconds must be >= 0"
+            ),
+            "target": {"node": node},
+            "steps": steps,
+            "cleanup_ok": False,
+        }
+
+    if recovery_seconds < 0:
+        return {
+            "stress_mode": "route_withdraw",
+            "status": "fail",
+            "details": (
+                "route_withdraw_recovery_seconds must be >= 0"
+            ),
+            "target": {"node": node},
+            "steps": steps,
+            "cleanup_ok": False,
+        }
+
+    if verify_bgp_advertisement and not peer_ip:
+        return {
+            "stress_mode": "route_withdraw",
+            "status": "fail",
+            "details": (
+                "route_withdraw_peer is required when "
+                "BGP verification is enabled"
+            ),
+            "target": {"node": node},
+            "steps": steps,
+            "cleanup_ok": False,
+        }
+
+    address_text = str(address)
+    network_prefix = str(address.network)
+
+    # IMPORTANT:
+    # Use the SAME connection-resolution pattern that already exists
+    # inside run_route_churn().
+    connection = get_node_connection(
+        inventory,
+        node,
+    )
+
+    # These keys should match your existing run_route_churn() code.
+    host = connection["host"]
+    user = connection["user"]
+    password = connection["password"]
+
+    target = {
+        "node": node,
+        "interface": f"lo0.{unit}",
+        "prefix": network_prefix,
+        "address": address_text,
+        "peer_ip": peer_ip,
+    }
+
+    prepared = False
+    cleanup_ok = False
+
+    result: Dict[str, Any] = {
+        "stress_mode": "route_withdraw",
+        "status": "fail",
+        "details": "Route withdraw did not complete.",
+        "target": target,
+        "steps": steps,
+        "cleanup_ok": False,
+    }
+
+    try:
+        # ------------------------------------------------------
+        # PRE-FLIGHT: exact address collision only.
+        #
+        # Do NOT check the whole lo0.0 because it legitimately
+        # contains production addresses.
+        # ------------------------------------------------------
+
+        config_collision = _run_cli(
+            host=host,
+            user=user,
+            password=password,
+            cli_command=(
+                "show configuration interfaces lo0 "
+                f"unit {unit} family inet "
+                f"address {address_text} "
+                "| display set | no-more"
+            ),
+            step_name=(
+                "route_withdraw preflight "
+                "address collision"
+            ),
+            timeout=timeout,
+        )
+
+        steps.append(config_collision)
+
+        existing_config = str(
+            config_collision.get("stdout") or ""
+        ).strip()
+
+        if existing_config:
+            result["details"] = (
+                f"Refusing route withdraw because "
+                f"{address_text} is already configured "
+                f"on lo0.{unit}."
+            )
+            return result
+
+        # ------------------------------------------------------
+        # PRE-FLIGHT: route must not already exist.
+        # ------------------------------------------------------
+
+        route_exists, route_collision = _route_present(
+            host=host,
+            user=user,
+            password=password,
+            network_prefix=network_prefix,
+            step_name=(
+                "route_withdraw preflight route collision"
+            ),
+            timeout=timeout,
+        )
+
+        steps.append(route_collision)
+
+        if route_exists:
+            result["details"] = (
+                f"Refusing route withdraw because "
+                f"{network_prefix} already exists."
+            )
+            return result
+
+        # ------------------------------------------------------
+        # ESTABLISH BASELINE.
+        #
+        # The controlled prefix is ACTIVE before the event.
+        # ------------------------------------------------------
+
+        baseline_create = _run_cli(
+            host=host,
+            user=user,
+            password=password,
+            cli_command=(
+                "configure; "
+                f"set interfaces lo0 unit {unit} "
+                f"family inet address {address_text}; "
+                "commit and-quit"
+            ),
+            step_name=(
+                "route_withdraw create baseline"
+            ),
+            timeout=timeout,
+        )
+
+        steps.append(baseline_create)
+
+        if baseline_create.get("returncode") != 0:
+            result["details"] = (
+                "Failed to create controlled route baseline."
+            )
+            return result
+
+        prepared = True
+
+        # ------------------------------------------------------
+        # VERIFY BASELINE LOCAL ROUTE.
+        # ------------------------------------------------------
+
+        baseline_present, baseline_route = _route_present(
+            host=host,
+            user=user,
+            password=password,
+            network_prefix=network_prefix,
+            step_name=(
+                "route_withdraw verify baseline local route"
+            ),
+            timeout=timeout,
+        )
+
+        steps.append(baseline_route)
+
+        if not baseline_present:
+            result["details"] = (
+                "Controlled route did not appear "
+                "during baseline."
+            )
+            return result
+
+        # ------------------------------------------------------
+        # VERIFY BASELINE BGP ADVERTISEMENT.
+        # ------------------------------------------------------
+
+        if verify_bgp_advertisement:
+            baseline_advertised, baseline_bgp = (
+                _route_advertised(
+                    host=host,
+                    user=user,
+                    password=password,
+                    peer_ip=peer_ip,
+                    network_prefix=network_prefix,
+                    step_name=(
+                        "route_withdraw verify baseline "
+                        "BGP advertisement"
+                    ),
+                    timeout=timeout,
+                )
+            )
+
+            steps.append(baseline_bgp)
+
+            if not baseline_advertised:
+                result["details"] = (
+                    "Controlled route was not advertised "
+                    "to the BGP peer during baseline."
+                )
+                return result
+
+        # ------------------------------------------------------
+        # STRESS EVENT: WITHDRAW EXACT ADDRESS.
+        #
+        # Never deactivate the whole lo0 unit.
+        # ------------------------------------------------------
+
+        withdraw = _run_cli(
+            host=host,
+            user=user,
+            password=password,
+            cli_command=(
+                "configure; "
+                f"deactivate interfaces lo0 unit {unit} "
+                f"family inet address {address_text}; "
+                "commit and-quit"
+            ),
+            step_name="route_withdraw withdraw",
+            timeout=timeout,
+        )
+
+        steps.append(withdraw)
+
+        if withdraw.get("returncode") != 0:
+            result["details"] = (
+                "Failed to withdraw controlled route."
+            )
+            return result
+
+        # ------------------------------------------------------
+        # VERIFY LOCAL WITHDRAWAL.
+        # ------------------------------------------------------
+
+        still_present, withdrawal_route = _route_present(
+            host=host,
+            user=user,
+            password=password,
+            network_prefix=network_prefix,
+            step_name=(
+                "route_withdraw verify local withdrawal"
+            ),
+            timeout=timeout,
+        )
+
+        steps.append(withdrawal_route)
+
+        if still_present:
+            result["details"] = (
+                "Controlled route remained in the local "
+                "RIB after withdrawal."
+            )
+            return result
+
+        # ------------------------------------------------------
+        # VERIFY BGP WITHDRAWAL.
+        # ------------------------------------------------------
+
+        if verify_bgp_advertisement:
+            withdrawn, withdrawal_bgp = (
+                _route_not_advertised(
+                    host=host,
+                    user=user,
+                    password=password,
+                    peer_ip=peer_ip,
+                    network_prefix=network_prefix,
+                    step_name=(
+                        "route_withdraw verify BGP withdrawal"
+                    ),
+                    timeout=timeout,
+                )
+            )
+
+            steps.append(withdrawal_bgp)
+
+            if not withdrawn:
+                result["details"] = (
+                    "Controlled route remained advertised "
+                    "after withdrawal."
+                )
+                return result
+
+        if hold_seconds:
+            time.sleep(hold_seconds)
+
+        # ------------------------------------------------------
+        # RECOVERY: RESTORE EXACT ADDRESS.
+        # ------------------------------------------------------
+
+        restore = _run_cli(
+            host=host,
+            user=user,
+            password=password,
+            cli_command=(
+                "configure; "
+                f"activate interfaces lo0 unit {unit} "
+                f"family inet address {address_text}; "
+                "commit and-quit"
+            ),
+            step_name="route_withdraw restore",
+            timeout=timeout,
+        )
+
+        steps.append(restore)
+
+        if restore.get("returncode") != 0:
+            result["details"] = (
+                "Failed to restore controlled route."
+            )
+            return result
+
+        if recovery_seconds:
+            time.sleep(recovery_seconds)
+
+        # ------------------------------------------------------
+        # VERIFY LOCAL RECOVERY.
+        # ------------------------------------------------------
+
+        recovered, recovery_route = _route_present(
+            host=host,
+            user=user,
+            password=password,
+            network_prefix=network_prefix,
+            step_name=(
+                "route_withdraw verify local recovery"
+            ),
+            timeout=timeout,
+        )
+
+        steps.append(recovery_route)
+
+        if not recovered:
+            result["details"] = (
+                "Controlled route did not return "
+                "after restoration."
+            )
+            return result
+
+        # ------------------------------------------------------
+        # VERIFY BGP RECOVERY.
+        # ------------------------------------------------------
+
+        if verify_bgp_advertisement:
+            advertised_again, recovery_bgp = (
+                _route_advertised(
+                    host=host,
+                    user=user,
+                    password=password,
+                    peer_ip=peer_ip,
+                    network_prefix=network_prefix,
+                    step_name=(
+                        "route_withdraw verify BGP recovery"
+                    ),
+                    timeout=timeout,
+                )
+            )
+
+            steps.append(recovery_bgp)
+
+            if not advertised_again:
+                result["details"] = (
+                    "Controlled route was not "
+                    "re-advertised after recovery."
+                )
+                return result
+
+        result.update(
+            {
+                "status": "pass",
+                "details": (
+                    "Controlled route withdrawal and "
+                    "recovery completed successfully."
+                ),
+                "baseline_route_present": True,
+                "baseline_bgp_advertised": (
+                    True
+                    if verify_bgp_advertisement
+                    else None
+                ),
+                "withdrawal_route_absent": True,
+                "withdrawal_bgp_absent": (
+                    True
+                    if verify_bgp_advertisement
+                    else None
+                ),
+                "recovery_route_present": True,
+                "recovery_bgp_advertised": (
+                    True
+                    if verify_bgp_advertisement
+                    else None
+                ),
+            }
+        )
+
+        return result
+
+    finally:
+        # ------------------------------------------------------
+        # GUARANTEED CLEANUP.
+        #
+        # Delete ONLY our temporary test address.
+        # ------------------------------------------------------
+
+        if prepared:
+            cleanup = _run_cli(
+                host=host,
+                user=user,
+                password=password,
+                cli_command=(
+                    "configure; "
+                    f"delete interfaces lo0 unit {unit} "
+                    f"family inet address {address_text}; "
+                    "commit and-quit"
+                ),
+                step_name="route_withdraw cleanup",
+                timeout=timeout,
+            )
+
+            steps.append(cleanup)
+
+            cleanup_ok = (
+                cleanup.get("returncode") == 0
+            )
+
+            result["cleanup_ok"] = cleanup_ok

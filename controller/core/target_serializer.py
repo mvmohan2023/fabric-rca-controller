@@ -53,6 +53,7 @@ def infer_target_type(
     if mode in {
         "bgp_clear",
         "route_churn",
+        "route_withdraw",
     }:
         return "node"
 
@@ -61,6 +62,12 @@ def infer_target_type(
 
     if mode.startswith("interface_"):
         return "interface"
+
+    if mode.startswith("bfd_"):
+        return "bfd_session"
+
+    if target.get("peer_ip") and target.get("target_type") == "bfd_session":
+        return "bfd_session"
 
     if target.get("peer_ip"):
         return "bgp_neighbor"
@@ -94,6 +101,12 @@ def serialize_generic_target(
         )
 
     elif target_type == "bgp_neighbor":
+        resource = _required_text(
+            target,
+            "peer_ip",
+        )
+
+    elif target_type == "bfd_session":
         resource = _required_text(
             target,
             "peer_ip",
@@ -159,6 +172,7 @@ def serialize_target(
     if mode in {
         "bgp_clear",
         "route_churn",
+        "route_withdraw",
     }:
         return _required_text(
             target,
@@ -182,4 +196,5 @@ def uses_generic_target_option(
     return mode not in {
         "bgp_clear",
         "route_churn",
+        "route_withdraw",
     }
