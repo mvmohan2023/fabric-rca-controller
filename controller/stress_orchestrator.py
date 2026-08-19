@@ -70,6 +70,11 @@ from controller.stress_actions.bfd import (
     run_bfd_session_flap,
 )
 
+from controller.stress_actions.process import (
+    run_process_restart,
+)
+
+
 
 BASE_DIR = Path("/root/fabric-controller")
 ARTIFACTS_DIR = BASE_DIR / "artifacts"
@@ -200,6 +205,7 @@ def parse_args():
             "route_churn",
             "route_withdraw",
             "bfd_session_flap",
+            "process_restart",
         ],
         help="Stress mode to execute.",
     )
@@ -433,6 +439,12 @@ def parse_args():
         type=int,
         default=10,
     )
+
+    parser.add_argument(
+        "--process-recovery-seconds",
+        type=int,
+        default=30,
+    )
     return parser.parse_args()
 
 
@@ -571,6 +583,27 @@ def _execute_noop(context: StressActionContext):
     return run_noop_action(
         context.settle_seconds,
     )
+
+
+def _execute_process_restart(
+    context: StressActionContext,
+):
+    return run_process_restart(
+        node=context.target.get("node"),
+        inventory=context.inventory,
+        process=context.target.get(
+            "process"
+        ),
+        recovery_seconds=context.option(
+            "process_recovery_seconds",
+            30,
+        ),
+        timeout=context.option(
+            "timeout",
+            120,
+        ),
+    )
+
 
 
 def _execute_bfd_session_flap(
@@ -828,6 +861,7 @@ def register_builtin_stress_actions() -> None:
         "route_churn": _execute_route_churn,
         "route_withdraw": _execute_route_withdraw,
         "bfd_session_flap": _execute_bfd_session_flap,
+        "process_restart":_execute_process_restart,
     }
 
     for mode, handler in builtin_actions.items():
@@ -990,6 +1024,7 @@ def run_single_stress_target(
     route_withdraw_verify_bgp=True,
     bfd_hold_seconds=5,
     bfd_recovery_seconds=10,
+    process_recovery_seconds=30,
 ):
 
     validate_target_for_stress_mode(stress_mode, target)
@@ -1032,6 +1067,7 @@ def run_single_stress_target(
             "route_withdraw_verify_bgp":route_withdraw_verify_bgp,
             "bfd_hold_seconds": bfd_hold_seconds,
             "bfd_recovery_seconds": bfd_recovery_seconds,
+            "process_recovery_seconds": process_recovery_seconds,
         },
     )
 
@@ -1096,6 +1132,7 @@ def run_parallel_stress_actions(
     route_withdraw_verify_bgp=True,
     bfd_hold_seconds=5,
     bfd_recovery_seconds=10,
+    process_recovery_seconds=30,
 ):
     print(f"\n[STRESS-GROUP] mode={stress_mode} parallel={parallel} targets={len(targets)}")
 
@@ -1150,6 +1187,7 @@ def run_parallel_stress_actions(
                 route_withdraw_verify_bgp,
                 bfd_hold_seconds,
                 bfd_recovery_seconds,
+                process_recovery_seconds,
             ): target
             for target in targets
         }
@@ -1217,6 +1255,7 @@ def run_stress_action(
     route_withdraw_verify_bgp=True,
     bfd_hold_seconds=5,
     bfd_recovery_seconds=10,
+    process_recovery_seconds=30,
 ):
     try:
         targets = parse_targets(

@@ -128,6 +128,52 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "rca": "UI should show grouped or multiple interface-bounce events across leaf fabric links with transient recovery.",
         },
     },
+    "daemon_restart_single": {
+        "stress_mode": "process_restart",
+        "description": (
+            "Restart one selected Junos software process "
+            "and validate bounded impact and recovery."
+        ),
+        "tier": "production_basic",
+        "maturity": "beta",
+        "release_gate": True,
+        "recovery_slo_seconds": 60,
+
+        "target_type": "process",
+        "requires_explicit_target": True,
+
+        "selection_policy": {
+            "selection_mode": "manual",
+            "session_role": "control_plane",
+            "blast_radius": "single_process",
+            "max_targets": 1,
+            "prefer_healthy": True,
+        },
+
+        "expected_classifications": [
+            "expected-transient-control-impact",
+            "expected-control-plane-recovery",
+        ],
+
+        "expected_behavior": {
+            "network": (
+                "The selected daemon restarts and returns "
+                "within the configured recovery window."
+            ),
+            "traffic": (
+                "Traffic impact must remain bounded and "
+                "recover after daemon restoration."
+            ),
+            "telemetry": (
+                "Process restart and related protocol "
+                "recovery should be observable."
+            ),
+            "rca": (
+                "RCA should identify the selected daemon "
+                "restart as the primary event."
+            ),
+        },
+    },
     "spine_fabric_parallel_bounce": {
         "stress_mode": "interface_bounce",
         "description": "Bounce one or more fabric-facing interfaces on spine nodes in parallel.",
@@ -1905,6 +1951,7 @@ def run_stress_event(
     route_withdraw_verify_bgp=True,
     bfd_hold_seconds=5,
     bfd_recovery_seconds=10,
+    process_recovery_seconds=30,
 ) -> str:
     stress_mode = SCENARIOS[scenario_name]["stress_mode"]
 
@@ -2089,6 +2136,12 @@ def run_stress_event(
         cmd.extend([
             "--bfd-recovery-seconds",
             str(bfd_recovery_seconds),
+        ])
+
+    if process_recovery_seconds is not None:
+        cmd.extend([
+            "--process-recovery-seconds",
+            str(process_recovery_seconds),
         ])
 
     print(
@@ -3478,6 +3531,7 @@ def run_single_scenario(
     route_withdraw_verify_bgp=True,
     bfd_hold_seconds=5,
     bfd_recovery_seconds=10,
+    process_recovery_seconds=30,
 ) -> Dict[str, Any]:
     scenario = SCENARIOS[scenario_name]
 
@@ -3633,6 +3687,7 @@ def run_single_scenario(
         route_withdraw_verify_bgp=route_withdraw_verify_bgp,
         bfd_hold_seconds=bfd_hold_seconds,
         bfd_recovery_seconds=bfd_recovery_seconds,
+        process_recovery_seconds=process_recovery_seconds,
     )
     if scenario_name == "ecmp_member_degraded_hold_restore":
         degraded_event_artifact = BASE_DIR / "artifacts" / "campaigns" / rca_run_id / "degraded_member_hold_event.json"
@@ -4796,6 +4851,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=10,
     )
+
+    parser.add_argument(
+        "--process-recovery-seconds",
+        type=int,
+        default=30,
+    )
     args = parser.parse_args()
     normalize_phase_timing_args(args)
 
@@ -4925,6 +4986,12 @@ def parse_args() -> argparse.Namespace:
                 "verification is enabled"
             )
 
+
+    if args.scenario == "daemon_restart_single":
+        if args.process_recovery_seconds < 0:
+            parser.error(
+                "--process-recovery-seconds must be >= 0"
+            )
     return args
 
 
@@ -5009,6 +5076,7 @@ def main() -> int:
                 ),
                 bfd_hold_seconds=args.bfd_hold_seconds,
                 bfd_recovery_seconds=args.bfd_recovery_seconds,
+                process_recovery_seconds=args.process_recovery_seconds,
 
             )
         
