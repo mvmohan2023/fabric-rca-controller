@@ -1952,6 +1952,9 @@ def run_stress_event(
     bfd_hold_seconds=5,
     bfd_recovery_seconds=10,
     process_recovery_seconds=30,
+    reboot_down_timeout_seconds=120,
+    reboot_recovery_timeout_seconds=600,
+    reboot_settle_seconds=30,
 ) -> str:
     stress_mode = SCENARIOS[scenario_name]["stress_mode"]
 
@@ -2142,6 +2145,24 @@ def run_stress_event(
         cmd.extend([
             "--process-recovery-seconds",
             str(process_recovery_seconds),
+        ])
+
+    if reboot_down_timeout_seconds is not None:
+        cmd.extend([
+            "--reboot-down-timeout-seconds",
+            str(reboot_down_timeout_seconds),
+        ])
+
+    if reboot_recovery_timeout_seconds is not None:
+        cmd.extend([
+            "--reboot-recovery-timeout-seconds",
+            str(reboot_recovery_timeout_seconds),
+        ])
+
+    if reboot_settle_seconds is not None:
+        cmd.extend([
+            "--reboot-settle-seconds",
+            str(reboot_settle_seconds),
         ])
 
     print(
@@ -3532,6 +3553,9 @@ def run_single_scenario(
     bfd_hold_seconds=5,
     bfd_recovery_seconds=10,
     process_recovery_seconds=30,
+    reboot_down_timeout_seconds=120,
+    reboot_recovery_timeout_seconds=600,
+    reboot_settle_seconds=30,
 ) -> Dict[str, Any]:
     scenario = SCENARIOS[scenario_name]
 
@@ -3688,6 +3712,9 @@ def run_single_scenario(
         bfd_hold_seconds=bfd_hold_seconds,
         bfd_recovery_seconds=bfd_recovery_seconds,
         process_recovery_seconds=process_recovery_seconds,
+        reboot_down_timeout_seconds=reboot_down_timeout_seconds,
+        reboot_recovery_timeout_seconds=reboot_recovery_timeout_seconds,
+        reboot_settle_seconds=reboot_settle_seconds,
     )
     if scenario_name == "ecmp_member_degraded_hold_restore":
         degraded_event_artifact = BASE_DIR / "artifacts" / "campaigns" / rca_run_id / "degraded_member_hold_event.json"
@@ -4857,6 +4884,26 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=30,
     )
+
+    parser.add_argument(
+        "--reboot-down-timeout-seconds",
+        type=int,
+        default=120,
+    )
+
+    parser.add_argument(
+        "--reboot-recovery-timeout-seconds",
+        type=int,
+        default=600,
+    )
+
+    parser.add_argument(
+        "--reboot-settle-seconds",
+        type=int,
+        default=30,
+    )
+
+
     args = parser.parse_args()
     normalize_phase_timing_args(args)
 
@@ -4992,6 +5039,23 @@ def parse_args() -> argparse.Namespace:
             parser.error(
                 "--process-recovery-seconds must be >= 0"
             )
+    if args.scenario == "reboot_single":
+        if args.reboot_down_timeout_seconds <= 0:
+            parser.error(
+                "--reboot-down-timeout-seconds must be > 0"
+            )
+
+        if args.reboot_recovery_timeout_seconds <= 0:
+            parser.error(
+                "--reboot-recovery-timeout-seconds must be > 0"
+            )
+
+        if args.reboot_settle_seconds < 0:
+            parser.error(
+                "--reboot-settle-seconds must be >= 0"
+            )
+
+
     return args
 
 
@@ -5077,6 +5141,9 @@ def main() -> int:
                 bfd_hold_seconds=args.bfd_hold_seconds,
                 bfd_recovery_seconds=args.bfd_recovery_seconds,
                 process_recovery_seconds=args.process_recovery_seconds,
+                reboot_down_timeout_seconds=args.reboot_down_timeout_seconds,
+                reboot_recovery_timeout_seconds=args.reboot_recovery_timeout_seconds,
+                reboot_settle_seconds=args.reboot_settle_seconds,
 
             )
         

@@ -54,6 +54,7 @@ def infer_target_type(
         "bgp_clear",
         "route_churn",
         "route_withdraw",
+        "node_reboot",
     }:
         return "node"
 
@@ -173,6 +174,7 @@ def serialize_target(
         "bgp_clear",
         "route_churn",
         "route_withdraw",
+         "node_reboot",
     }:
         return _required_text(
             target,
@@ -197,4 +199,5 @@ def uses_generic_target_option(
         "bgp_clear",
         "route_churn",
         "route_withdraw",
+         "node_reboot",
     }
