@@ -48,6 +48,17 @@ from controller.validation import (
     load_post_sample_health,
 )
 
+from controller.config_loader import load_inventory
+
+from controller.platform_health_collector import (
+    collect_node_platform_health,
+)
+
+from controller.platform_health_collector import (
+    collect_node_platform_health,
+    compare_platform_health,
+)
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_TOPOLOGY = str(BASE_DIR / "artifacts" / "topology" / "topology_full.json")
@@ -3668,6 +3679,79 @@ def run_single_scenario(
 
     print(f"\n[PLAN] stress_run_id = {actual_stress_run_id}")
 
+
+
+
+    # ---------------------------------------------------------
+    # PRE-EVENT PLATFORM HEALTH
+    # ---------------------------------------------------------
+
+    platform_node = (
+        targets_resolved[0].get("node")
+        if targets_resolved
+        else None
+    )
+
+    platform_pre = {}
+
+    if platform_node:
+        try:
+            device_inventory = load_inventory(
+                str(
+                    BASE_DIR
+                    / "inventory"
+                    / "inventory.active.yaml"
+                )
+            )
+
+            platform_pre = collect_node_platform_health(
+                node=platform_node,
+                inventory=device_inventory,
+                cpu_threshold_pct=90.0,
+                memory_threshold_pct=90.0,
+                timeout=30,
+            )
+
+            progress.info(
+                "platform_pre_status="
+                f"{platform_pre.get('status')}"
+            )
+
+            progress.info(
+                "platform_pre_cpu_pct="
+                f"{(
+                    platform_pre.get('cpu')
+                    or {}
+                ).get('utilization_pct')}"
+            )
+
+            progress.info(
+                "platform_pre_memory_pct="
+                f"{(
+                    platform_pre.get('memory')
+                    or {}
+                ).get('utilization_pct')}"
+            )
+
+            progress.info(
+                "platform_pre_core_count="
+                f"{platform_pre.get('core_count')}"
+            )
+
+            progress.info(
+                "platform_pre_alarm_count="
+                f"{(
+                    platform_pre.get('alarms')
+                    or {}
+                ).get('active_count')}"
+            )
+
+        except Exception as exc:
+            progress.info(
+                "platform_pre_collection_failed="
+                f"{exc}"
+            )
+
     progress.stage("STRESS_EVENT_EXECUTION")
     progress.info(f"stress_run_id={actual_stress_run_id}")
     t0 = time.time()
@@ -4062,6 +4146,164 @@ def run_single_scenario(
         evidence_rollup=evidence_rollup,
     )
 
+        # ---------------------------------------------------------
+    # POST-EVENT PLATFORM HEALTH + PRE/POST DELTA
+    # ---------------------------------------------------------
+
+    platform_post = {}
+    platform_health = {}
+
+    if platform_node:
+        try:
+            device_inventory = load_inventory(
+                str(
+                    BASE_DIR
+                    / "inventory"
+                    / "inventory.active.yaml"
+                )
+            )
+
+            platform_post = collect_node_platform_health(
+                node=platform_node,
+                inventory=device_inventory,
+                cpu_threshold_pct=90.0,
+                memory_threshold_pct=90.0,
+                timeout=30,
+            )
+
+            progress.info(
+                "platform_post_status="
+                f"{platform_post.get('status')}"
+            )
+
+            platform_delta = compare_platform_health(
+                baseline=platform_pre,
+                current=platform_post,
+            )
+
+            # Start with the current/post snapshot because that contains
+            # the actual CPU/memory/core health expected by EVL.
+            platform_health = dict(
+                platform_post
+            )
+
+            # Add scenario-aware PRE/POST evidence.
+            platform_health[
+                "baseline"
+            ] = platform_pre
+
+            platform_health[
+                "post"
+            ] = platform_post
+
+            platform_health[
+                "delta"
+            ] = platform_delta
+
+            platform_health[
+                "unexpected_alarm_count"
+            ] = platform_delta.get(
+                "unexpected_alarm_count",
+                0,
+            )
+
+            # EVL expects core_count to represent unexpected cores.
+            platform_health[
+                "core_count"
+            ] = platform_delta.get(
+                "new_core_count",
+                0,
+            )
+
+            platform_health[
+                "memory_delta_pct"
+            ] = platform_delta.get(
+                "memory_delta_pct"
+            )
+
+            #
+            # Delta failures must promote the final platform status.
+            #
+            if platform_delta.get("status") == "fail":
+                platform_health["status"] = "fail"
+
+            progress.info(
+                "platform_health_status="
+                f"{platform_health.get('status')}"
+            )
+
+            progress.info(
+                "platform_unexpected_alarm_count="
+                f"{platform_health.get('unexpected_alarm_count')}"
+            )
+
+            progress.info(
+                "platform_new_core_count="
+                f"{platform_health.get('core_count')}"
+            )
+
+            progress.info(
+                "platform_memory_delta_pct="
+                f"{platform_health.get('memory_delta_pct')}"
+            )
+
+        except Exception as exc:
+            progress.info(
+                "platform_post_collection_failed="
+                f"{exc}"
+            )
+    if platform_node:
+        try:
+            device_inventory = load_inventory(
+                str(
+                    BASE_DIR
+                    / "inventory"
+                    / "inventory.active.yaml"
+                )
+            )
+
+            platform_health = (
+                collect_node_platform_health(
+                    node=platform_node,
+                    inventory=device_inventory,
+                    cpu_threshold_pct=90.0,
+                    memory_threshold_pct=90.0,
+                    timeout=30,
+                )
+            )
+
+            progress.info(
+                "platform_health_status="
+                f"{platform_health.get('status')}"
+            )
+
+            progress.info(
+                "platform_health_node="
+                f"{platform_node}"
+            )
+
+            progress.info(
+                "platform_cpu_utilization_pct="
+                f"{(
+                    platform_health.get('cpu')
+                    or {}
+                ).get('utilization_pct')}"
+            )
+
+            progress.info(
+                "platform_memory_utilization_pct="
+                f"{(
+                    platform_health.get('memory')
+                    or {}
+                ).get('utilization_pct')}"
+            )
+
+        except Exception as exc:
+            progress.info(
+                "platform_health_collection_failed="
+                f"{exc}"
+        )
+
     engineering_validation_result = (
         EngineeringValidationBuilder(
             stress_validation=stress_validation,
@@ -4076,10 +4318,8 @@ def run_single_scenario(
             # Scenario-specific mandatory traffic policy will be added later.
             traffic_required=None,
 
-            # No complete platform-health artifact exists yet.
-            # The platform evaluator correctly returns INCONCLUSIVE unless
             # explicit platform evidence or hard failure signals are present.
-            platform_health={},
+            platform_health=platform_health,
         ).build()
     )
 
@@ -4128,6 +4368,7 @@ def run_single_scenario(
         "impact_ok": impact_ok,
         "evidence_rollup": evidence_rollup,
         "engineering_validation": engineering_validation,
+        "platform_health": platform_health,
         "telemetry_health": ui_validation.get("telemetry_health", {}),
         "bug_candidate_signals": ui_validation.get("bug_candidate_signals", []),
         "stress_classification": ui_validation.get("stress_classification", {}),
