@@ -4221,6 +4221,23 @@ def run_single_scenario(
                 "memory_delta_pct"
             )
 
+            platform_health[
+                "new_optics_alarm_count"
+            ] = platform_delta.get(
+                "new_optics_alarm_count",
+                0,
+            )
+
+            platform_health[
+                "optics_health_failed"
+            ] = (
+                platform_health[
+                    "new_optics_alarm_count"
+                ]
+                > 0
+            )
+
+
             #
             # Delta failures must promote the final platform status.
             #
@@ -4296,6 +4313,12 @@ def run_single_scenario(
                     platform_health.get('memory')
                     or {}
                 ).get('utilization_pct')}"
+            )
+
+
+            progress.info(
+                "platform_new_optics_alarm_count="
+                f"{platform_health.get('new_optics_alarm_count')}"
             )
 
         except Exception as exc:

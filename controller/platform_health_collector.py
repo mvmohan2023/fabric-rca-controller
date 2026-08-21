@@ -250,6 +250,46 @@ def collect_node_platform_health(
         else []
     )
 
+    # ------------------------------------------------------
+    # Collect optics health.
+    #
+    # Raw optics alarms/warnings are snapshot evidence only.
+    # PRE/POST comparison determines whether a new optics
+    # problem was introduced by the scenario.
+    # ------------------------------------------------------
+
+    optics_step = run_remote_command(
+        host,
+        user,
+        password,
+        (
+            'cli -c "show interfaces diagnostics '
+            'optics | no-more"'
+        ),
+        "platform_health optics",
+        timeout=timeout,
+    )
+
+    optics_stdout = str(
+        optics_step.get("stdout") or ""
+    )
+
+    optics = (
+        _parse_optics_health(
+            optics_stdout
+        )
+        if optics_step.get("returncode") == 0
+        else {
+            "status": "unknown",
+            "active_alarm_count": 0,
+            "active_warning_count": 0,
+            "active_alarms": [],
+            "active_warnings": [],
+            "alarm_lines_checked": 0,
+            "warning_lines_checked": 0,
+        }
+    )
+
     if (
         cpu_status == "fail"
         or memory_status == "fail"
@@ -299,6 +339,8 @@ def collect_node_platform_health(
             "active": alarms,
         },
 
+        "optics": optics,
+
         "core_count": (
             core_count
             if core_count is not None
@@ -314,8 +356,43 @@ def collect_node_platform_health(
             "cpu_memory": step,
             "core_dumps": core_step,
             "alarms": alarm_step,
+            "optics": optics_step,
         },
     }
+
+def _optics_identity(
+    item: Dict[str, Any],
+) -> tuple:
+    return (
+        str(
+            item.get("interface")
+            or ""
+        ).strip(),
+        item.get("lane"),
+        str(
+            item.get("signal")
+            or ""
+        ).strip().lower(),
+    )
+
+
+def _find_new_optics_alarms(
+    *,
+    baseline: List[Dict[str, Any]],
+    current: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    baseline_ids = {
+        _optics_identity(item)
+        for item in baseline
+    }
+
+    return [
+        item
+        for item in current
+        if _optics_identity(item)
+        not in baseline_ids
+    ]
+
 
 
 def _parse_core_count(text: str) -> int | None:
@@ -425,6 +502,34 @@ def compare_platform_health(
         current=current_alarms,
     )
 
+
+    baseline_optics = (
+        baseline.get("optics")
+        or {}
+    )
+
+    current_optics = (
+        current.get("optics")
+        or {}
+    )
+
+    new_optics_alarms = (
+        _find_new_optics_alarms(
+            baseline=(
+                baseline_optics.get(
+                    "active_alarms"
+                )
+                or []
+            ),
+            current=(
+                current_optics.get(
+                    "active_alarms"
+                )
+                or []
+            ),
+        )
+    )
+
     baseline_core_count = int(
         baseline.get("core_count") or 0
     )
@@ -464,7 +569,11 @@ def compare_platform_health(
 
     status = "pass"
 
-    if new_core_count > 0 or new_alarms:
+    if (
+        new_core_count > 0
+        or new_alarms
+        or new_optics_alarms
+    ):
         status = "fail"
 
     return {
@@ -489,4 +598,108 @@ def compare_platform_health(
 
         "memory_delta_pct":
             memory_delta_pct,
+
+        "new_optics_alarms":
+            new_optics_alarms,
+
+        "new_optics_alarm_count":
+            len(new_optics_alarms),
+    }
+
+def _parse_optics_health(text: str) -> Dict[str, Any]:
+    """Parse active optics alarms/warnings from Junos diagnostics output."""
+
+    current_interface = None
+    current_lane = None
+
+    active_alarms = []
+    active_warnings = []
+
+    alarm_lines_checked = 0
+    warning_lines_checked = 0
+
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.rstrip()
+
+        interface_match = re.match(
+            r"^Physical interface:\s+(\S+)",
+            line,
+        )
+
+        if interface_match:
+            current_interface = interface_match.group(1)
+            current_lane = None
+            continue
+
+        lane_match = re.match(
+            r"^\s*Lane\s+(\d+)",
+            line,
+        )
+
+        if lane_match:
+            current_lane = int(
+                lane_match.group(1)
+            )
+            continue
+
+        state_match = re.match(
+            r"^\s*(.+?(?:alarm|warning))\s*:\s*(On|Off)\s*$",
+            line,
+            re.IGNORECASE,
+        )
+
+        if not state_match:
+            continue
+
+        name = state_match.group(1).strip()
+        state = state_match.group(2).lower()
+
+        entry = {
+            "interface": current_interface,
+            "lane": current_lane,
+            "signal": name,
+            "state": state,
+        }
+
+        if "warning" in name.lower():
+            warning_lines_checked += 1
+
+            if state == "on":
+                active_warnings.append(
+                    entry
+                )
+        else:
+            alarm_lines_checked += 1
+
+            if state == "on":
+                active_alarms.append(
+                    entry
+                )
+
+    if active_alarms:
+        status = "fail"
+    elif active_warnings:
+        status = "warn"
+    elif (
+        alarm_lines_checked > 0
+        or warning_lines_checked > 0
+    ):
+        status = "pass"
+    else:
+        status = "unknown"
+
+    return {
+        "status": status,
+        "active_alarm_count": len(
+            active_alarms
+        ),
+        "active_warning_count": len(
+            active_warnings
+        ),
+        "active_alarms": active_alarms,
+        "active_warnings": active_warnings,
+        "alarm_lines_checked":
+            alarm_lines_checked,
+        "warning_lines_checked":
+            warning_lines_checked,
     }
