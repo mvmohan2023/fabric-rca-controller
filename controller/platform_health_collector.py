@@ -290,6 +290,35 @@ def collect_node_platform_health(
         }
     )
 
+    # ------------------------------------------------------
+    # Collect physical-interface error counters.
+    #
+    # Raw counters are snapshot evidence only.
+    # PRE/POST delta determines whether the scenario
+    # introduced new CRC/framing/FEC failures.
+    # ------------------------------------------------------
+
+    interface_error_step = run_remote_command(
+        host,
+        user,
+        password,
+        'cli -c "show interfaces extensive | no-more"',
+        "platform_health interface_errors",
+        timeout=max(timeout, 120),
+    )
+
+    interface_error_stdout = str(
+        interface_error_step.get("stdout") or ""
+    )
+
+    interface_errors = (
+        _parse_interface_error_health(
+            interface_error_stdout
+        )
+        if interface_error_step.get("returncode") == 0
+        else []
+    )
+
     if (
         cpu_status == "fail"
         or memory_status == "fail"
@@ -340,6 +369,7 @@ def collect_node_platform_health(
         },
 
         "optics": optics,
+        "interface_errors": interface_errors,
 
         "core_count": (
             core_count
@@ -357,6 +387,7 @@ def collect_node_platform_health(
             "core_dumps": core_step,
             "alarms": alarm_step,
             "optics": optics_step,
+            "interface_errors": interface_error_step,
         },
     }
 
@@ -530,6 +561,23 @@ def compare_platform_health(
         )
     )
 
+    interface_error_delta = (
+        compare_interface_error_health(
+            baseline=(
+                baseline.get(
+                    "interface_errors"
+                )
+                or []
+            ),
+            current=(
+                current.get(
+                    "interface_errors"
+                )
+                or []
+            ),
+        )
+    )
+
     baseline_core_count = int(
         baseline.get("core_count") or 0
     )
@@ -573,6 +621,9 @@ def compare_platform_health(
         new_core_count > 0
         or new_alarms
         or new_optics_alarms
+        or interface_error_delta.get(
+            "status"
+        ) == "fail"
     ):
         status = "fail"
 
@@ -604,7 +655,236 @@ def compare_platform_health(
 
         "new_optics_alarm_count":
             len(new_optics_alarms),
+
+        "interface_error_delta":
+            interface_error_delta,
+
+        "interface_error_failure_count":
+            interface_error_delta.get(
+                "failure_interface_count",
+                0,
+            ),
+
+        "interface_error_failure_interfaces":
+            interface_error_delta.get(
+                "failure_interfaces",
+                [],
+            ),
     }
+
+
+def _parse_interface_error_health(
+    text: str,
+) -> list[dict[str, Any]]:
+    """Parse physical-interface error counters from Junos EVO output."""
+
+    interfaces = []
+    current = None
+
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+
+        match = re.match(
+            r"Physical interface:\s*([^,\s]+)",
+            line,
+            re.IGNORECASE,
+        )
+
+        if match:
+            if current:
+                interfaces.append(current)
+
+            current = {
+                "interface": match.group(1),
+                "input_errors": 0,
+                "framing_errors": 0,
+                "output_errors": 0,
+                "hs_link_crc_errors": 0,
+                "fec_corrected_errors": 0,
+                "fec_uncorrected_errors": 0,
+                "rx_crc_align_errors": 0,
+                "tx_crc_align_errors": 0,
+            }
+
+            continue
+
+        if current is None:
+            continue
+
+        if line.startswith("Errors:"):
+            match = re.search(
+                r"Errors:\s*(\d+).*?"
+                r"Framing errors:\s*(\d+)",
+                line,
+            )
+
+            if match:
+                current["input_errors"] = int(
+                    match.group(1)
+                )
+                current["framing_errors"] = int(
+                    match.group(2)
+                )
+
+            continue
+
+        if line.startswith("Carrier transitions:"):
+            match = re.search(
+                r"Errors:\s*(\d+).*?"
+                r"HS link CRC errors:\s*(\d+)",
+                line,
+            )
+
+            if match:
+                current["output_errors"] = int(
+                    match.group(1)
+                )
+                current["hs_link_crc_errors"] = int(
+                    match.group(2)
+                )
+
+            continue
+
+        match = re.match(
+            r"FEC Corrected Errors\s+(\d+)$",
+            line,
+        )
+
+        if match:
+            current["fec_corrected_errors"] = int(
+                match.group(1)
+            )
+            continue
+
+        match = re.match(
+            r"FEC Uncorrected Errors\s+(\d+)$",
+            line,
+        )
+
+        if match:
+            current["fec_uncorrected_errors"] = int(
+                match.group(1)
+            )
+            continue
+
+        match = re.match(
+            r"CRC/Align errors\s+(\d+)\s+(\d+)",
+            line,
+        )
+
+        if match:
+            current["rx_crc_align_errors"] = int(
+                match.group(1)
+            )
+            current["tx_crc_align_errors"] = int(
+                match.group(2)
+            )
+
+    if current:
+        interfaces.append(current)
+
+    return interfaces
+
+
+def compare_interface_error_health(
+    *,
+    baseline: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+) -> Dict[str, Any]:
+    """Compare PRE/POST physical-interface error counters."""
+
+    baseline_by_interface = {
+        item["interface"]: item
+        for item in baseline
+        if item.get("interface")
+    }
+
+    deltas = []
+    failure_interfaces = []
+
+    counters = (
+        "input_errors",
+        "framing_errors",
+        "output_errors",
+        "hs_link_crc_errors",
+        "fec_corrected_errors",
+        "fec_uncorrected_errors",
+        "rx_crc_align_errors",
+        "tx_crc_align_errors",
+    )
+
+    for current_item in current:
+        interface = current_item.get("interface")
+
+        if not interface:
+            continue
+
+        baseline_item = baseline_by_interface.get(
+            interface,
+            {},
+        )
+
+        delta = {
+            "interface": interface,
+        }
+
+        for counter in counters:
+            pre_value = int(
+                baseline_item.get(counter) or 0
+            )
+            post_value = int(
+                current_item.get(counter) or 0
+            )
+
+            delta[counter] = max(
+                0,
+                post_value - pre_value,
+            )
+
+        #
+        # Strong physical-error failure signals.
+        #
+        hard_failure = any(
+            delta[counter] > 0
+            for counter in (
+                "framing_errors",
+                "hs_link_crc_errors",
+                "fec_uncorrected_errors",
+                "rx_crc_align_errors",
+                "tx_crc_align_errors",
+            )
+        )
+
+        #
+        # Generic input/output errors are retained as
+        # evidence but are not independently promoted here,
+        # because they may include broader non-CRC causes.
+        #
+        delta["hard_failure"] = hard_failure
+
+        if hard_failure:
+            failure_interfaces.append(
+                interface
+            )
+
+        deltas.append(delta)
+
+    return {
+        "status": (
+            "fail"
+            if failure_interfaces
+            else "pass"
+        ),
+        "interface_count": len(deltas),
+        "failure_interface_count":
+            len(failure_interfaces),
+        "failure_interfaces":
+            failure_interfaces,
+        "deltas": deltas,
+    }
+
+
+
 
 def _parse_optics_health(text: str) -> Dict[str, Any]:
     """Parse active optics alarms/warnings from Junos diagnostics output."""

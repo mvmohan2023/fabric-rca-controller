@@ -4237,6 +4237,27 @@ def run_single_scenario(
                 > 0
             )
 
+            platform_health[
+                "interface_error_failure_count"
+            ] = platform_delta.get(
+                "interface_error_failure_count",
+                0,
+            )
+
+            platform_health[
+                "interface_error_failure_interfaces"
+            ] = platform_delta.get(
+                "interface_error_failure_interfaces",
+                [],
+            )
+
+            platform_health[
+                "interface_error_delta"
+            ] = platform_delta.get(
+                "interface_error_delta",
+                {},
+            )
+
 
             #
             # Delta failures must promote the final platform status.
@@ -4319,6 +4340,11 @@ def run_single_scenario(
             progress.info(
                 "platform_new_optics_alarm_count="
                 f"{platform_health.get('new_optics_alarm_count')}"
+            )
+
+            progress.info(
+                "platform_interface_error_failure_count="
+                f"{platform_health.get('interface_error_failure_count')}"
             )
 
         except Exception as exc:
