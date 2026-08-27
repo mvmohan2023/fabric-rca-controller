@@ -4258,6 +4258,41 @@ def run_single_scenario(
                 {},
             )
 
+            platform_health[
+                "disk_delta"
+            ] = platform_delta.get(
+                "disk_delta",
+                {},
+            )
+
+            platform_health[
+                "disk_new_warning_count"
+            ] = platform_delta.get(
+                "disk_new_warning_count",
+                0,
+            )
+
+            platform_health[
+                "disk_new_failure_count"
+            ] = platform_delta.get(
+                "disk_new_failure_count",
+                0,
+            )
+
+            platform_health[
+                "disk_new_warnings"
+            ] = platform_delta.get(
+                "disk_new_warnings",
+                [],
+            )
+
+            platform_health[
+                "disk_new_failures"
+            ] = platform_delta.get(
+                "disk_new_failures",
+                [],
+            )
+
 
             #
             # Delta failures must promote the final platform status.

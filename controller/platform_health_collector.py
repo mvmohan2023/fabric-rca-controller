@@ -319,16 +319,72 @@ def collect_node_platform_health(
         else []
     )
 
+
+    # ------------------------------------------------------
+    # Collect persistent filesystem utilization.
+    # ------------------------------------------------------
+
+    disk_step = run_remote_command(
+        host,
+        user,
+        password,
+        "df -P",
+        "platform_health disk_usage",
+        timeout=timeout,
+    )
+
+    disk_stdout = str(
+        disk_step.get("stdout") or ""
+    )
+
+    if disk_step.get("returncode") == 0:
+        disk_filesystems = _parse_disk_usage(
+            disk_stdout
+        )
+
+        disk = _evaluate_disk_health(
+            disk_filesystems
+        )
+    else:
+        disk = {
+            "status": "unknown",
+            "filesystem_count": 0,
+            "warning_count": 0,
+            "failure_count": 0,
+            "warning_threshold_pct": 85,
+            "failure_threshold_pct": 95,
+            "warnings": [],
+            "failures": [],
+            "filesystems": [],
+        }
+
+    disk_status = str(
+        disk.get("status") or "unknown"
+    ).lower()
+
     if (
         cpu_status == "fail"
         or memory_status == "fail"
         or core_status == "fail"
+        or disk_status == "fail"
     ):
         overall_status = "fail"
+    elif (
+        disk_status == "warn"
+        and cpu_status == "pass"
+        and memory_status == "pass"
+        and core_status == "pass"
+    ):
+        overall_status = "pass"
+        evidence.append(
+            "Disk utilization warning detected, "
+            "but no disk failure threshold was exceeded."
+        )
     elif (
         cpu_status == "pass"
         and memory_status == "pass"
         and core_status == "pass"
+        and disk_status == "pass"
     ):
         overall_status = "pass"
     else:
@@ -370,7 +426,7 @@ def collect_node_platform_health(
 
         "optics": optics,
         "interface_errors": interface_errors,
-
+        "disk": disk,
         "core_count": (
             core_count
             if core_count is not None
@@ -388,6 +444,7 @@ def collect_node_platform_health(
             "alarms": alarm_step,
             "optics": optics_step,
             "interface_errors": interface_error_step,
+            "disk": disk_step,
         },
     }
 
@@ -511,6 +568,155 @@ def _find_new_alarms(
         not in baseline_ids
     ]
 
+
+
+def compare_disk_health(
+    *,
+    baseline: Dict[str, Any],
+    current: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Compare persistent filesystem utilization pre/post event."""
+
+    baseline_filesystems = (
+        baseline.get("filesystems")
+        or []
+    )
+
+    current_filesystems = (
+        current.get("filesystems")
+        or []
+    )
+
+    baseline_by_mount = {
+        str(item.get("mount") or ""): item
+        for item in baseline_filesystems
+        if item.get("mount")
+    }
+
+    deltas = []
+    new_warnings = []
+    new_failures = []
+
+    for current_item in current_filesystems:
+        mount = str(
+            current_item.get("mount") or ""
+        )
+
+        if not mount:
+            continue
+
+        baseline_item = baseline_by_mount.get(
+            mount
+        )
+
+        baseline_pct = (
+            baseline_item.get("utilization_pct")
+            if baseline_item
+            else None
+        )
+
+        current_pct = current_item.get(
+            "utilization_pct"
+        )
+
+        delta_pct = None
+
+        if (
+            baseline_pct is not None
+            and current_pct is not None
+        ):
+            delta_pct = round(
+                float(current_pct)
+                - float(baseline_pct),
+                2,
+            )
+
+        warning_threshold = int(
+            current.get(
+                "warning_threshold_pct",
+                85,
+            )
+        )
+
+        failure_threshold = int(
+            current.get(
+                "failure_threshold_pct",
+                95,
+            )
+        )
+
+        baseline_warning = (
+            baseline_pct is not None
+            and float(baseline_pct)
+            >= warning_threshold
+        )
+
+        baseline_failure = (
+            baseline_pct is not None
+            and float(baseline_pct)
+            >= failure_threshold
+        )
+
+        current_warning = (
+            current_pct is not None
+            and float(current_pct)
+            >= warning_threshold
+        )
+
+        current_failure = (
+            current_pct is not None
+            and float(current_pct)
+            >= failure_threshold
+        )
+
+        row = {
+            "mount": mount,
+            "baseline_utilization_pct":
+                baseline_pct,
+            "current_utilization_pct":
+                current_pct,
+            "delta_pct":
+                delta_pct,
+            "new_warning": (
+                current_warning
+                and not baseline_warning
+            ),
+            "new_failure": (
+                current_failure
+                and not baseline_failure
+            ),
+        }
+
+        deltas.append(row)
+
+        if row["new_warning"]:
+            new_warnings.append(row)
+
+        if row["new_failure"]:
+            new_failures.append(row)
+
+    status = (
+        "fail"
+        if new_failures
+        else "pass"
+    )
+
+    return {
+        "status": status,
+        "filesystem_count": len(deltas),
+        "new_warning_count": len(
+            new_warnings
+        ),
+        "new_failure_count": len(
+            new_failures
+        ),
+        "new_warnings": new_warnings,
+        "new_failures": new_failures,
+        "deltas": deltas,
+    }
+
+
+
 def compare_platform_health(
     *,
     baseline: Dict[str, Any],
@@ -578,14 +784,24 @@ def compare_platform_health(
         )
     )
 
-    baseline_core_count = int(
-        baseline.get("core_count") or 0
-    )
 
     current_core_count = int(
         current.get("core_count") or 0
     )
+    baseline_core_count = int(
+        baseline.get("core_count") or 0
+    )
 
+    disk_delta = compare_disk_health(
+        baseline=(
+            baseline.get("disk")
+            or {}
+        ),
+        current=(
+            current.get("disk")
+            or {}
+        ),
+    )
     new_core_count = max(
         0,
         current_core_count - baseline_core_count,
@@ -622,6 +838,9 @@ def compare_platform_health(
         or new_alarms
         or new_optics_alarms
         or interface_error_delta.get(
+            "status"
+        ) == "fail"
+        or disk_delta.get(
             "status"
         ) == "fail"
     ):
@@ -670,7 +889,182 @@ def compare_platform_health(
                 "failure_interfaces",
                 [],
             ),
+
+
+        "disk_delta":
+            disk_delta,
+
+        "disk_new_warning_count":
+            disk_delta.get(
+                "new_warning_count",
+                0,
+            ),
+
+        "disk_new_failure_count":
+            disk_delta.get(
+                "new_failure_count",
+                0,
+            ),
+
+        "disk_new_warnings":
+            disk_delta.get(
+                "new_warnings",
+                [],
+            ),
+
+        "disk_new_failures":
+            disk_delta.get(
+                "new_failures",
+                [],
+            ),
     }
+
+def _parse_disk_usage(
+    text: str,
+) -> list[dict[str, Any]]:
+    """Parse persistent filesystem utilization from df -P output."""
+
+    rows = []
+
+    ignored_fs_prefixes = (
+        "/dev/loop",
+        "tmpfs",
+        "devtmpfs",
+    )
+
+    ignored_mount_prefixes = (
+        "/run/initramfs",
+        "/run/",
+        "/dev/shm",
+        "/sys/fs/cgroup",
+    )
+
+    ignored_mounts = {
+        "/",
+        "/tmp",
+    }
+
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+
+        if not line:
+            continue
+
+        if line.lower().startswith(
+            "filesystem"
+        ):
+            continue
+
+        parts = line.split()
+
+        if len(parts) < 6:
+            continue
+
+        filesystem = parts[0]
+        size = parts[1]
+        used = parts[2]
+        available = parts[3]
+        use_pct_raw = parts[4]
+        mount = parts[5]
+
+        if filesystem.startswith(
+            ignored_fs_prefixes
+        ):
+            continue
+
+        if mount in ignored_mounts:
+            continue
+
+        if mount.startswith(
+            ignored_mount_prefixes
+        ):
+            continue
+
+        if not use_pct_raw.endswith("%"):
+            continue
+
+        try:
+            utilization_pct = int(
+                use_pct_raw.rstrip("%")
+            )
+        except ValueError:
+            continue
+
+        rows.append(
+            {
+                "filesystem": filesystem,
+                "mount": mount,
+                "size": size,
+                "used": used,
+                "available": available,
+                "utilization_pct":
+                    utilization_pct,
+            }
+        )
+
+    return rows
+
+def _evaluate_disk_health(
+    filesystems: list[dict[str, Any]],
+    *,
+    warning_threshold_pct: int = 85,
+    failure_threshold_pct: int = 95,
+) -> Dict[str, Any]:
+    """Evaluate persistent filesystem utilization."""
+
+    warnings = []
+    failures = []
+
+    for item in filesystems:
+        utilization_pct = int(
+            item.get(
+                "utilization_pct"
+            )
+            or 0
+        )
+
+        if utilization_pct >= failure_threshold_pct:
+            failures.append(
+                item
+            )
+
+        elif utilization_pct >= warning_threshold_pct:
+            warnings.append(
+                item
+            )
+
+    if failures:
+        status = "fail"
+
+    elif warnings:
+        status = "warn"
+
+    elif filesystems:
+        status = "pass"
+
+    else:
+        status = "unknown"
+
+    return {
+        "status": status,
+        "filesystem_count": len(
+            filesystems
+        ),
+        "warning_count": len(
+            warnings
+        ),
+        "failure_count": len(
+            failures
+        ),
+        "warning_threshold_pct":
+            warning_threshold_pct,
+        "failure_threshold_pct":
+            failure_threshold_pct,
+        "warnings": warnings,
+        "failures": failures,
+        "filesystems": filesystems,
+    }
+
 
 
 def _parse_interface_error_health(
