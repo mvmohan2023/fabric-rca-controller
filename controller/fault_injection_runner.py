@@ -75,6 +75,31 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "rca": "Any detected hotspot reflects steady-state behavior rather than event-induced churn.",
         },
     },
+    "gnmi_poll_validation": {
+        "stress_mode": "noop",
+        "target_type": "none",
+        "strict_telemetry": True,
+        "description": (
+            "Validate gNMI polling health across the telemetry "
+            "lifecycle without injecting a fabric fault."
+        ),
+        "tier": "telemetry",
+        "maturity": "experimental",
+        "release_gate": False,
+        "expected_behavior": {
+            "network": (
+                "Fabric remains stable with no injected event."
+            ),
+            "telemetry": (
+                "gNMI polling succeeds across PRE, RUNNING, "
+                "recovery-window, and POST collection."
+            ),
+            "rca": (
+                "Telemetry validation reports collection health "
+                "without event-induced disturbance."
+            ),
+        },
+    },
     "single_interface_flap": {
         "description": "Repeatedly flap one interface and validate fabric recovery.",
         "stress_mode": "interface_flap",
@@ -1515,6 +1540,10 @@ def resolve_targets_for_scenario(
 
     scenario = SCENARIOS[scenario_name]
 
+    # Validation-only / targetless scenarios do not inject
+    # a fault against a specific fabric entity.
+    if scenario.get("target_type") == "none":
+        return []
 
     if explicit_bgp_targets:
         if scenario.get("target_type") != "bgp_neighbor":
@@ -1697,6 +1726,72 @@ def resolve_targets_for_scenario(
             "after the live BFD-session collector is added."
         )
 
+    # ------------------------------------------------------
+    # Explicit process target resolution.
+    #
+    # Format:
+    #   process|node|process
+    #
+    # Example:
+    #   process|leaf1|routing
+    # ------------------------------------------------------
+
+    if scenario.get("target_type") == "process":
+        if not explicit_targets:
+            raise ValueError(
+                f"{scenario_name} requires "
+                "--targets process|node|process"
+            )
+
+        targets: List[Dict[str, str]] = []
+
+        for raw_target in explicit_targets.split(","):
+            value = raw_target.strip()
+
+            if not value:
+                continue
+
+            parts = value.split("|", 2)
+
+            if len(parts) != 3:
+                raise ValueError(
+                    f"Invalid process target '{value}'. "
+                    "Expected process|node|process"
+                )
+
+            target_type, node, process = [
+                part.strip()
+                for part in parts
+            ]
+
+            if target_type != "process":
+                raise ValueError(
+                    f"Invalid process target type "
+                    f"'{target_type}'. Expected 'process'."
+                )
+
+            if not node or not process:
+                raise ValueError(
+                    f"Invalid process target '{value}'. "
+                    "Both node and process are required."
+                )
+
+            targets.append(
+                {
+                    "target_type": "process",
+                    "node": node,
+                    "process": process,
+                }
+            )
+
+        if len(targets) != 1:
+            raise ValueError(
+                f"{scenario_name} requires exactly "
+                "one process target"
+            )
+
+        return targets
+
     # Manual target always wins
     if explicit_node and explicit_interface:
         return [{"node": explicit_node, "interface": explicit_interface}]
@@ -1862,10 +1957,12 @@ def write_resolved_targets_artifacts(
         "",
         "Resolved Targets:",
     ]
-    text.extend([
-        f"  - {t['node']}:{t['interface']}" if t.get("interface") else f"  - {t['node']}"
-        for t in targets
-    ])
+    text.extend(
+        [
+            f"  - {format_resolved_target(t)}"
+            for t in targets
+        ]
+    )
     run_txt.write_text("\n".join(text) + "\n", encoding="utf-8")
     repro_txt.write_text("\n".join(text) + "\n", encoding="utf-8")
 
@@ -1910,6 +2007,17 @@ def format_resolved_target(target: Dict[str, Any]) -> str:
             else node or interface
         )
 
+
+    if target_type == "process":
+        process = str(
+            target.get("process") or ""
+        ).strip()
+
+        return (
+            f"process|{node}|{process}"
+            if node and process
+            else node or process
+        )
     resource = str(
         target.get("resource") or ""
     ).strip()
@@ -3629,7 +3737,14 @@ def run_single_scenario(
                 f"no degraded hold targets resolved for speed={degrade_target_speed}"
             )
 
-    target_mode = "explicit" if (node and interface) or targets else "auto"
+    if scenario.get("target_type") == "none":
+        target_mode = "none"
+    else:
+        target_mode = (
+            "explicit"
+            if (node and interface) or targets
+            else "auto"
+        )
     resolved_target_artifacts = write_resolved_targets_artifacts(
         run_id=rca_run_id,
         scenario_name=scenario_name,
@@ -4176,9 +4291,35 @@ def run_single_scenario(
                 f"{platform_post.get('status')}"
             )
 
+            expected_daemon_restarts = set()
+
+            if (
+                scenario.get("stress_mode")
+                == "process_restart"
+                and targets_resolved
+            ):
+                process_target = targets_resolved[0]
+
+                if (
+                    process_target.get("target_type")
+                    == "process"
+                ):
+                    process_name = str(
+                        process_target.get("process")
+                        or ""
+                    ).strip().lower()
+
+                    if process_name:
+                        expected_daemon_restarts.add(
+                            process_name
+                        )
+
             platform_delta = compare_platform_health(
                 baseline=platform_pre,
                 current=platform_post,
+                expected_daemon_restarts=(
+                    expected_daemon_restarts
+                ),
             )
 
             # Start with the current/post snapshot because that contains
@@ -4219,6 +4360,22 @@ def run_single_scenario(
                 "memory_delta_pct"
             ] = platform_delta.get(
                 "memory_delta_pct"
+            )
+
+            # EVL expects daemon_crash_count to represent
+            # unexpected daemon failures/restarts only.
+            platform_health[
+                "daemon_crash_count"
+            ] = platform_delta.get(
+                "daemon_crash_count",
+                0,
+            )
+
+            platform_health[
+                "daemon_delta"
+            ] = platform_delta.get(
+                "daemon_delta",
+                {},
             )
 
             platform_health[

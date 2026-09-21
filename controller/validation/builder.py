@@ -318,6 +318,7 @@ class EngineeringValidationBuilder:
             evidence_rollup=self.evidence_rollup,
             phase_timeline=self.phase_timeline,
             post_sample_health=self.post_sample_health,
+            scenario=self.scenario,
         )
 
         platform = evaluate_platform(

@@ -21,6 +21,7 @@ def evaluate_telemetry(
     evidence_rollup: Dict[str, Any],
     phase_timeline: Dict[str, Any],
     post_sample_health: List[Dict[str, Any]] | None = None,
+    scenario: Dict[str, Any] | None = None,
 ) -> ValidationResult:
     """Evaluate telemetry collection continuity and health.
 
@@ -34,6 +35,16 @@ def evaluate_telemetry(
     """
 
     post_sample_health = list(post_sample_health or [])
+
+
+
+    scenario = dict(
+        scenario or {}
+    )
+
+    strict_telemetry = bool(
+        scenario.get("strict_telemetry")
+    )
 
     evidence_status = dict(
         evidence_rollup.get("status") or {}
@@ -110,20 +121,32 @@ def evaluate_telemetry(
         stage: evidence_status.get(stage)
         for stage in _REQUIRED_STAGES
     }
-
     failed_stages = [
         stage
         for stage, status in stage_results.items()
-        if str(status or "").lower() == "failed"
+        if (
+            str(status or "").lower() == "failed"
+            or (
+                strict_telemetry
+                and str(status or "").lower()
+                == "partial"
+            )
+        )
     ]
 
     missing_stages = [
         stage
         for stage, status in stage_results.items()
-        if str(status or "").lower()
-        not in {"ok", "failed"}
+        if (
+            str(status or "").lower()
+            not in {"ok", "failed"}
+            and not (
+                strict_telemetry
+                and str(status or "").lower()
+                == "partial"
+            )
+        )
     ]
-
     evidence = [
         value
         for value in (
