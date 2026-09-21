@@ -76,6 +76,70 @@ def _parse_memory(text: str) -> Dict[str, float | None]:
     }
 
 
+
+
+
+_DAEMON_PROCESS_MAP = {
+    "routing": "rpd",
+    "management": "mgd",
+    "snmp": "snmpd",
+}
+
+
+def _parse_daemon_processes(
+    text: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Parse monitored daemon PID/running state."""
+
+    matched_pids: Dict[str, List[int]] = {
+        logical_name: []
+        for logical_name in _DAEMON_PROCESS_MAP
+    }
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+
+        if not line:
+            continue
+
+        parts = line.split(None, 1)
+
+        if len(parts) != 2:
+            continue
+
+        pid_text, process_name = parts
+
+        if not pid_text.isdigit():
+            continue
+
+        process_name = process_name.strip()
+
+        for logical_name, unix_process in (
+            _DAEMON_PROCESS_MAP.items()
+        ):
+            if process_name == unix_process:
+                matched_pids[logical_name].append(
+                    int(pid_text)
+                )
+
+    processes: Dict[str, Dict[str, Any]] = {}
+
+    for logical_name, unix_process in (
+        _DAEMON_PROCESS_MAP.items()
+    ):
+        pids = sorted(
+            matched_pids.get(logical_name) or []
+        )
+
+        processes[logical_name] = {
+            "process": unix_process,
+            "running": bool(pids),
+            "pid": pids[0] if pids else None,
+            "pids": pids,
+        }
+
+    return processes
+
 def collect_node_platform_health(
     *,
     node: str,
@@ -320,6 +384,44 @@ def collect_node_platform_health(
     )
 
 
+
+    # ------------------------------------------------------
+    # Collect monitored daemon process state.
+    #
+    # PID changes are interpreted later during PRE/POST
+    # comparison because some scenarios intentionally
+    # restart a daemon.
+    # ------------------------------------------------------
+
+    daemon_step = run_remote_command(
+        host,
+        user,
+        password,
+        "ps -ax -o pid=,comm=",
+        "platform_health daemons",
+        timeout=timeout,
+    )
+
+    daemon_stdout = str(
+        daemon_step.get("stdout") or ""
+    )
+
+    if daemon_step.get("returncode") == 0:
+        daemons = _parse_daemon_processes(
+            daemon_stdout
+        )
+    else:
+        daemons = {
+            logical_name: {
+                "process": unix_process,
+                "running": None,
+                "pid": None,
+                "pids": [],
+            }
+            for logical_name, unix_process
+            in _DAEMON_PROCESS_MAP.items()
+        }
+
     # ------------------------------------------------------
     # Collect persistent filesystem utilization.
     # ------------------------------------------------------
@@ -427,6 +529,7 @@ def collect_node_platform_health(
         "optics": optics,
         "interface_errors": interface_errors,
         "disk": disk,
+        "daemons": daemons,
         "core_count": (
             core_count
             if core_count is not None
@@ -444,6 +547,7 @@ def collect_node_platform_health(
             "alarms": alarm_step,
             "optics": optics_step,
             "interface_errors": interface_error_step,
+            "daemons": daemon_step,
             "disk": disk_step,
         },
     }
@@ -716,12 +820,270 @@ def compare_disk_health(
     }
 
 
+def compare_daemon_health(
+    *,
+    baseline: Dict[str, Any],
+    current: Dict[str, Any],
+    expected_restarts: set[str] | None = None,
+) -> Dict[str, Any]:
+    """Compare PRE/POST daemon state.
+
+    Intentional restart targets are reported as expected.
+    Unexpected daemon loss or restart is treated as failure.
+    """
+
+    expected_restarts = {
+        str(item).strip().lower()
+        for item in (expected_restarts or set())
+        if str(item).strip()
+    }
+
+    details = []
+    unexpected = []
+    expected = []
+
+    daemon_names = sorted(
+        set(baseline.keys())
+        | set(current.keys())
+    )
+
+    for daemon_name in daemon_names:
+        pre = baseline.get(daemon_name) or {}
+        post = current.get(daemon_name) or {}
+
+        pre_running = pre.get("running")
+        post_running = post.get("running")
+
+        pre_pids = set(
+            int(pid)
+            for pid in (pre.get("pids") or [])
+            if pid is not None
+        )
+
+        post_pids = set(
+            int(pid)
+            for pid in (post.get("pids") or [])
+            if pid is not None
+        )
+
+        is_expected_restart = (
+            daemon_name in expected_restarts
+        )
+
+        item = {
+            "daemon": daemon_name,
+            "process": (
+                post.get("process")
+                or pre.get("process")
+            ),
+            "baseline_running": pre_running,
+            "current_running": post_running,
+            "baseline_pids": sorted(pre_pids),
+            "current_pids": sorted(post_pids),
+            "expected_restart": is_expected_restart,
+            "pid_set_changed": (
+                pre_pids != post_pids
+                if pre_pids or post_pids
+                else False
+            ),
+        }
+
+        # Collection uncertainty should not be called a crash.
+        if (
+            pre_running is None
+            or post_running is None
+        ):
+            item["classification"] = "inconclusive"
+            details.append(item)
+            continue
+
+        # A daemon that was running before stress but is
+        # absent afterward is always a failure, including
+        # intentionally restarted daemons that did not recover.
+        if pre_running and not post_running:
+            item["classification"] = (
+                "unexpected_down"
+            )
+            unexpected.append(item)
+            details.append(item)
+            continue
+
+        # Daemon absent at baseline is baseline condition.
+        if not pre_running:
+            item["classification"] = (
+                "baseline_not_running"
+            )
+            details.append(item)
+            continue
+
+        pid_set_changed = pre_pids != post_pids
+
+        if not pid_set_changed:
+            item["classification"] = "stable"
+            details.append(item)
+            continue
+
+        if is_expected_restart:
+            item["classification"] = (
+                "expected_restart"
+            )
+            expected.append(item)
+            details.append(item)
+            continue
+
+        # mgd is multi-instance on Junos and can legitimately
+        # have management-session PID churn. Do not classify
+        # a partial PID-set change as a daemon crash as long
+        # as at least one baseline mgd process survives.
+        if daemon_name == "management":
+            surviving_pids = (
+                pre_pids & post_pids
+            )
+
+            if surviving_pids:
+                item["classification"] = (
+                    "multi_instance_churn"
+                )
+                item["surviving_pids"] = sorted(
+                    surviving_pids
+                )
+                details.append(item)
+                continue
+
+        item["classification"] = (
+            "unexpected_restart"
+        )
+        unexpected.append(item)
+        details.append(item)
+
+    return {
+        "status": (
+            "fail"
+            if unexpected
+            else "pass"
+        ),
+        "daemon_crash_count": len(unexpected),
+        "unexpected": unexpected,
+        "expected": expected,
+        "details": details,
+    }
+
+
+
+
+def compare_pfe_health(
+    *,
+    baseline: Dict[str, Any],
+    current: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Compare PRE/POST PFE/FPC operational state."""
+
+    baseline_fpcs = {
+        str(item.get("slot")): item
+        for item in (
+            baseline.get("fpcs")
+            or []
+        )
+        if item.get("slot") is not None
+    }
+
+    current_fpcs = {
+        str(item.get("slot")): item
+        for item in (
+            current.get("fpcs")
+            or []
+        )
+        if item.get("slot") is not None
+    }
+
+    details = []
+    failures = []
+
+    slots = sorted(
+        set(baseline_fpcs)
+        | set(current_fpcs)
+    )
+
+    for slot in slots:
+        pre = baseline_fpcs.get(slot)
+        post = current_fpcs.get(slot)
+
+        pre_state = str(
+            (pre or {}).get("state")
+            or "unknown"
+        ).strip().lower()
+
+        post_state = str(
+            (post or {}).get("state")
+            or "unknown"
+        ).strip().lower()
+
+        item = {
+            "slot": slot,
+            "baseline_state": pre_state,
+            "current_state": post_state,
+        }
+
+        if pre is None:
+            item["classification"] = (
+                "new_slot_observed"
+            )
+
+        elif post is None:
+            item["classification"] = (
+                "missing_after_event"
+            )
+            failures.append(item)
+
+        elif (
+            pre_state == "online"
+            and post_state != "online"
+        ):
+            item["classification"] = (
+                "new_pfe_failure"
+            )
+            failures.append(item)
+
+        elif (
+            pre_state != "online"
+            and post_state == pre_state
+        ):
+            item["classification"] = (
+                "baseline_condition"
+            )
+
+        elif pre_state == post_state:
+            item["classification"] = "stable"
+
+        else:
+            item["classification"] = (
+                "state_change"
+            )
+
+        details.append(item)
+
+    return {
+        "status": (
+            "fail"
+            if failures
+            else "pass"
+        ),
+        "pfe_failure_count": len(
+            failures
+        ),
+        "failures": failures,
+        "details": details,
+    }
+
+
 
 def compare_platform_health(
     *,
     baseline: Dict[str, Any],
     current: Dict[str, Any],
+    expected_daemon_restarts: set[str] | None = None,
 ) -> Dict[str, Any]:
+
     """Compare pre/post platform-health snapshots."""
 
     baseline_alarms = (
@@ -783,7 +1145,29 @@ def compare_platform_health(
             ),
         )
     )
-
+    pfe_delta = compare_pfe_health(
+        baseline=(
+            baseline.get("pfe")
+            or {}
+        ),
+        current=(
+            current.get("pfe")
+            or {}
+        ),
+    )
+    daemon_delta = compare_daemon_health(
+        baseline=(
+            baseline.get("daemons")
+            or {}
+        ),
+        current=(
+            current.get("daemons")
+            or {}
+        ),
+        expected_restarts=(
+            expected_daemon_restarts
+        ),
+    )
 
     current_core_count = int(
         current.get("core_count") or 0
@@ -843,6 +1227,13 @@ def compare_platform_health(
         or disk_delta.get(
             "status"
         ) == "fail"
+        or daemon_delta.get(
+            "status"
+        ) == "fail"
+        or pfe_delta.get(
+            "status"
+        ) == "fail"
+
     ):
         status = "fail"
 
@@ -916,6 +1307,34 @@ def compare_platform_health(
             disk_delta.get(
                 "new_failures",
                 [],
+            ),
+                "daemon_delta":
+            daemon_delta,
+
+        "daemon_crash_count":
+            daemon_delta.get(
+                "daemon_crash_count",
+                0,
+            ),
+
+        "daemon_unexpected":
+            daemon_delta.get(
+                "unexpected",
+                [],
+            ),
+
+        "daemon_expected_restarts":
+            daemon_delta.get(
+                "expected",
+                [],
+            ),
+        "pfe_delta":
+            pfe_delta,
+
+        "pfe_failure_count":
+            pfe_delta.get(
+                "pfe_failure_count",
+                0,
             ),
     }
 
