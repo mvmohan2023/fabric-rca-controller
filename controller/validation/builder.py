@@ -334,7 +334,56 @@ class EngineeringValidationBuilder:
             telemetry=telemetry,
             platform=platform,
         )
+        not_applicable_domains = {
+            str(domain).strip().lower()
+            for domain in self.scenario.get(
+                "not_applicable_validation_domains",
+                [],
+            )
+            if str(domain).strip()
+        }
 
+        unknown_not_applicable = (
+            not_applicable_domains
+            - set(self._DOMAIN_ORDER)
+        )
+
+        if unknown_not_applicable:
+            raise ValueError(
+                "Unsupported not-applicable validation "
+                "domain(s): "
+                + ", ".join(
+                    sorted(unknown_not_applicable)
+                )
+            )
+
+        conflicting_domains = (
+            not_applicable_domains
+            & self.required_domains
+        )
+
+        if conflicting_domains:
+            raise ValueError(
+                "Validation domain(s) cannot be both "
+                "required and not applicable: "
+                + ", ".join(
+                    sorted(conflicting_domains)
+                )
+            )
+
+        for domain_name in not_applicable_domains:
+            domains[domain_name] = (
+                ValidationResult.not_applicable_result(
+                    summary=(
+                        f"{domain_name.capitalize()} validation "
+                        "is not applicable to this scenario."
+                    ),
+                    reasons=[
+                        "Scenario validation policy marks this "
+                        "domain as not applicable."
+                    ],
+                )
+            )
         (
             overall_status,
             overall_confidence,
@@ -342,12 +391,12 @@ class EngineeringValidationBuilder:
         ) = self._derive_overall(domains)
 
         return EngineeringValidationResult(
-            event=event,
-            impact=impact,
-            recovery=recovery,
-            traffic=traffic,
-            telemetry=telemetry,
-            platform=platform,
+            event=domains["event"],
+            impact=domains["impact"],
+            recovery=domains["recovery"],
+            traffic=domains["traffic"],
+            telemetry=domains["telemetry"],
+            platform=domains["platform"],
             overall_status=overall_status,
             overall_confidence=overall_confidence,
             summary=summary,

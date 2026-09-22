@@ -79,10 +79,20 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
         "stress_mode": "noop",
         "target_type": "none",
         "strict_telemetry": True,
+        "required_validation_domains": [
+            "telemetry",
+            "platform",
+        ],
+        "not_applicable_validation_domains": [
+            "event",
+            "impact",
+            "recovery",
+        ],
         "description": (
             "Validate gNMI polling health across the telemetry "
             "lifecycle without injecting a fabric fault."
         ),
+
         "tier": "telemetry",
         "maturity": "experimental",
         "release_gate": False,
@@ -4553,6 +4563,10 @@ def run_single_scenario(
             evidence_rollup=evidence_rollup,
             phase_timeline=phase_timeline,
             scenario=scenario,
+            required_domains=(
+                scenario.get("required_validation_domains")
+                or None
+            ),
             post_sample_health=post_sample_health,
 
             # None allows the traffic evaluator to use available evidence.
