@@ -77,7 +77,13 @@ Evidence:
 
 gNMI Subscribe
 
-Status: Pending
+Status: Code and offline validation complete; live qualification pending
+
+Evidence:
+- Bounded gNMI stream command and subscription primitive validated offline
+- Multi-node stream health aggregation validated offline
+- Stream-mode Engineering Validation PASS/FAIL/INCONCLUSIVE semantics validated offline
+- Runner collector and artifact plumbing validated offline
 
 SNMP
 
