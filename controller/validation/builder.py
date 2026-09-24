@@ -52,6 +52,7 @@ class EngineeringValidationBuilder:
         post_sample_health: list[Dict[str, Any]] | None = None,
         traffic_required: bool | None = None,
         platform_health: Dict[str, Any] | None = None,
+        stream_health: Dict[str, Any] | None = None,
         required_domains: Iterable[str] | None = None,
     ) -> None:
         self.stress_validation = dict(
@@ -79,7 +80,9 @@ class EngineeringValidationBuilder:
         self.platform_health = dict(
             platform_health or {}
         )
-
+        self.stream_health = dict(
+            stream_health or {}
+        )
         if required_domains is None:
             resolved_required_domains = set(
                 self._DEFAULT_REQUIRED_DOMAINS
@@ -319,6 +322,7 @@ class EngineeringValidationBuilder:
             phase_timeline=self.phase_timeline,
             post_sample_health=self.post_sample_health,
             scenario=self.scenario,
+            stream_health=self.stream_health,
         )
 
         platform = evaluate_platform(

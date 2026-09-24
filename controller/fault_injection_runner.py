@@ -19,6 +19,17 @@ from controller.run_rca_case import (
     telemetry_json_path,
     build_phase_sample_paths,
 )
+from controller.telemetry_monitor import (
+    DEFAULT_CATALOG,
+    DEFAULT_INVENTORY,
+    DEFAULT_TELEMETRY_SERVER,
+    collect_stream_health,
+    get_profile_paths,
+    load_catalog,
+    load_inventory as load_telemetry_inventory,
+    parse_nodes,
+)
+
 from controller.ecmp_recovery_view import (
     build_ecmp_recovery_input_from_existing_artifacts,
     build_ecmp_recovery_view,
@@ -106,6 +117,41 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             ),
             "rca": (
                 "Telemetry validation reports collection health "
+                "without event-induced disturbance."
+            ),
+        },
+    },
+    "gnmi_subscribe_validation": {
+        "stress_mode": "noop",
+        "target_type": "none",
+        "strict_telemetry": True,
+        "telemetry_validation_mode": "stream",
+        "required_validation_domains": [
+            "telemetry",
+            "platform",
+        ],
+        "not_applicable_validation_domains": [
+            "event",
+            "impact",
+            "recovery",
+        ],
+        "description": (
+            "Validate gNMI streaming subscription health "
+            "without injecting a fabric fault."
+        ),
+        "tier": "telemetry",
+        "maturity": "experimental",
+        "release_gate": False,
+        "expected_behavior": {
+            "network": (
+                "Fabric remains stable with no injected event."
+            ),
+            "telemetry": (
+                "gNMI streaming subscription establishes "
+                "successfully and receives telemetry updates."
+            ),
+            "rca": (
+                "Telemetry validation reports streaming health "
                 "without event-induced disturbance."
             ),
         },
@@ -3811,10 +3857,23 @@ def run_single_scenario(
     # PRE-EVENT PLATFORM HEALTH
     # ---------------------------------------------------------
 
+    telemetry_nodes = parse_nodes(nodes)
+
     platform_node = (
         targets_resolved[0].get("node")
         if targets_resolved
-        else None
+        else (
+            telemetry_nodes[0]
+            if (
+                scenario.get("target_type") == "none"
+                and telemetry_nodes
+            )
+            else None
+        )
+    )
+
+    progress.info(
+        f"platform_health_reference_node={platform_node}"
     )
 
     platform_pre = {}
@@ -3876,6 +3935,9 @@ def run_single_scenario(
                 "platform_pre_collection_failed="
                 f"{exc}"
             )
+
+    stream_health: Dict[str, Any] = {}
+    stream_health_path: Optional[str] = None
 
     progress.stage("STRESS_EVENT_EXECUTION")
     progress.info(f"stress_run_id={actual_stress_run_id}")
@@ -3947,10 +4009,95 @@ def run_single_scenario(
     progress.info(f"stress_report_path={stress_report_path}")
     progress.info(f"stress_event_elapsed_sec={time.time() - t0:.1f}")
 
+    if (
+        scenario.get("telemetry_validation_mode")
+        == "stream"
+    ):
+        progress.stage("GNMI_STREAM_VALIDATION")
+        progress.info(
+            "Collecting bounded gNMI streaming telemetry evidence"
+        )
+
+        try:
+            telemetry_catalog = load_catalog(
+                DEFAULT_CATALOG
+            )
+            telemetry_paths = get_profile_paths(
+                telemetry_catalog,
+                profile,
+            )
+            telemetry_inventory = load_telemetry_inventory(
+                DEFAULT_INVENTORY
+            )
+
+            stream_health = collect_stream_health(
+                telemetry_server=DEFAULT_TELEMETRY_SERVER,
+                ssh_user="root",
+                nodes=telemetry_nodes,
+                paths=telemetry_paths,
+                inventory=telemetry_inventory,
+                timeout=timeout,
+                profile=profile,
+                source_type="campaign",
+                run_id=rca_run_id,
+                default_gnmi_port=60061,
+                topology_path=topology,
+                duration_seconds=30,
+                stream_mode="sample",
+                sample_interval="5s",
+            )
+
+            stream_dir = (
+                BASE_DIR
+                / "artifacts"
+                / "campaigns"
+                / rca_run_id
+            )
+            stream_dir.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            stream_health_path = str(
+                stream_dir
+                / "gnmi_stream_health.json"
+            )
+
+            stream_health["artifact_path"] = (
+                stream_health_path
+            )
+
+            atomic_write_json(
+                stream_health_path,
+                stream_health,
+            )
+
+            progress.info(
+                "gnmi_stream_health_status="
+                f"{stream_health.get('status')}"
+            )
+            progress.info(
+                "gnmi_stream_health_update_count="
+                f"{stream_health.get('update_count')}"
+            )
+            progress.info(
+                "gnmi_stream_health_subscriptions="
+                f"{stream_health.get('subscriptions_passed')}/"
+                f"{stream_health.get('subscriptions_total')}"
+            )
+            progress.info(
+                "gnmi_stream_health_path="
+                f"{stream_health_path}"
+            )
+
+        except Exception as exc:
+            stream_health = {}
+            progress.info(
+                "gnmi_stream_health_collection_failed="
+                f"{exc}"
+            )
     progress.stage("RCA_CASE_EXECUTION")
     t0 = time.time()
-
-
 
     # Route churn is a control-plane route event, not an ECMP
     # member/interface degradation event. Do not manufacture
@@ -4575,6 +4722,7 @@ def run_single_scenario(
 
             # explicit platform evidence or hard failure signals are present.
             platform_health=platform_health,
+            stream_health=stream_health,
         ).build()
     )
 
@@ -4625,6 +4773,8 @@ def run_single_scenario(
         "engineering_validation": engineering_validation,
         "platform_health": platform_health,
         "telemetry_health": ui_validation.get("telemetry_health", {}),
+        "gnmi_stream_health": stream_health,
+        "gnmi_stream_health_path": stream_health_path,
         "bug_candidate_signals": ui_validation.get("bug_candidate_signals", []),
         "stress_classification": ui_validation.get("stress_classification", {}),
         "cos_hotspot_correlation": cos_hotspot_path,

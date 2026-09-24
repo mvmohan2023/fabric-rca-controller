@@ -69,7 +69,15 @@ Daemon Restart
 
 gNMI Poll
 
+Status: Code and offline validation complete; live qualification pending
+
+Evidence:
+- b769076 — Add strict gNMI poll validation
+- ba55fbe — Add validation domain policy for gNMI poll
+
 gNMI Subscribe
+
+Status: Pending
 
 SNMP
 

@@ -516,6 +516,458 @@ def build_gnmic_command(
     )
     return ssh_cmd
 
+def build_gnmic_subscribe_command(
+    telemetry_server: str,
+    target: str,
+    sub_path: str,
+    timeout: int,
+    ssh_user: str,
+    duration_seconds: int = 30,
+    stream_mode: str = "sample",
+    sample_interval: str = "5s",
+) -> str:
+    """
+    Build a bounded gNMI streaming subscription command.
+
+    The existing snapshot/poll path remains unchanged.
+    """
+    duration_seconds = max(1, int(duration_seconds))
+
+    allowed_stream_modes = {
+        "sample",
+        "on-change",
+        "target-defined",
+    }
+    if stream_mode not in allowed_stream_modes:
+        raise ValueError(
+            f"unsupported gNMI stream mode: {stream_mode}"
+        )
+
+    stream_args = [
+        "gnmic",
+        "-a",
+        target,
+        "sub",
+        "--path",
+        sub_path,
+        "--mode",
+        "stream",
+        "--stream-mode",
+        stream_mode,
+    ]
+
+    if stream_mode == "sample":
+        stream_args.extend([
+            "--sample-interval",
+            sample_interval,
+        ])
+
+    stream_args.extend([
+        "--insecure",
+        "--format",
+        "json",
+    ])
+
+    inner_gnmic = " ".join(
+        shlex.quote(str(arg))
+        for arg in stream_args
+    )
+
+    # Exit 124 from timeout is expected when a healthy stream reaches
+    # the requested observation duration.
+    inner_cmd = (
+        f"timeout {duration_seconds}s "
+        f"{inner_gnmic}"
+    )
+
+    ssh_cmd = (
+        f"ssh -o StrictHostKeyChecking=no "
+        f"-o ConnectTimeout={timeout} "
+        f"{shlex.quote(ssh_user)}@"
+        f"{shlex.quote(telemetry_server)} "
+        f"{shlex.quote(inner_cmd)}"
+    )
+
+    return ssh_cmd
+
+def run_gnmic_subscribe(
+    telemetry_server: str,
+    target: str,
+    sub_path: str,
+    timeout: int,
+    ssh_user: str,
+    duration_seconds: int = 30,
+    stream_mode: str = "sample",
+    sample_interval: str = "5s",
+) -> Dict[str, Any]:
+    """
+    Run a bounded gNMI streaming subscription and return
+    stream-health evidence.
+    """
+    cmd = build_gnmic_subscribe_command(
+        telemetry_server=telemetry_server,
+        target=target,
+        sub_path=sub_path,
+        timeout=timeout,
+        ssh_user=ssh_user,
+        duration_seconds=duration_seconds,
+        stream_mode=stream_mode,
+        sample_interval=sample_interval,
+    )
+
+    started_at = utc_now_iso()
+
+    proc = subprocess.run(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=max(
+            int(duration_seconds) + int(timeout) + 15,
+            30,
+        ),
+    )
+
+    completed_at = utc_now_iso()
+
+    stdout_text = (proc.stdout or "").strip()
+    stderr_text = (proc.stderr or "").strip()
+
+    payloads: List[Dict[str, Any]] = []
+
+    if stdout_text:
+        try:
+            payloads = extract_json_objects_from_stdout(
+                stdout_text
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "failed to parse gNMI streaming output "
+                f"for target={target}, path={sub_path}: "
+                f"{exc}\n"
+                f"STDOUT preview:\n"
+                f"{stdout_text[:2000]}\n"
+                f"STDERR preview:\n"
+                f"{stderr_text[:1200]}"
+            ) from exc
+
+    # GNU timeout returns 124 when it terminates the command after
+    # the requested observation duration. For a streaming test this
+    # is an expected completion condition.
+    duration_completed = proc.returncode == 124
+
+    unexpected_disconnect = (
+        proc.returncode not in {0, 124}
+    )
+
+    update_count = len(payloads)
+
+    status = (
+        "pass"
+        if update_count > 0
+        and not unexpected_disconnect
+        else "fail"
+    )
+
+    return {
+        "status": status,
+        "target": target,
+        "path": sub_path,
+        "stream_mode": stream_mode,
+        "sample_interval": (
+            sample_interval
+            if stream_mode == "sample"
+            else None
+        ),
+        "duration_seconds": int(duration_seconds),
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "returncode": proc.returncode,
+        "duration_completed": duration_completed,
+        "unexpected_disconnect": unexpected_disconnect,
+        "update_count": update_count,
+        "received_updates": update_count > 0,
+        "stderr": stderr_text,
+        "command": cmd,
+        "raw": payloads,
+    }
+
+def _collect_stream_node(
+    *,
+    node: str,
+    telemetry_server: str,
+    ssh_user: str,
+    paths: List[str],
+    per_node_paths: Dict[str, List[str]],
+    inventory_indexes: Dict[str, Any],
+    timeout: int,
+    default_gnmi_port: int,
+    topology_node_interfaces: Dict[str, set],
+    duration_seconds: int,
+    stream_mode: str,
+    sample_interval: str,
+) -> Dict[str, Any]:
+
+    node_result: Dict[str, Any] = {
+        "node": node,
+        "target": None,
+        "status": "pass",
+        "errors": [],
+        "subscriptions": [],
+        "resolved_device": None,
+        "resolved_mgt_ip": None,
+        "resolved_grpc": None,
+        "resolved_role": None,
+        "resolved_serial": None,
+        "resolved_paths": [],
+        "subscriptions_total": 0,
+        "subscriptions_passed": 0,
+        "subscriptions_failed": 0,
+        "update_count": 0,
+        "unexpected_disconnects": 0,
+    }
+
+    node_paths: List[str] = []
+
+    try:
+        target, record = resolve_node_target(
+            node=node,
+            inventory_indexes=inventory_indexes,
+            default_port=default_gnmi_port,
+        )
+
+        node_result["target"] = target
+        node_result["resolved_device"] = record.get("device")
+        node_result["resolved_mgt_ip"] = record.get("mgt_ip")
+        node_result["resolved_grpc"] = record.get("grpc")
+        node_result["resolved_role"] = record.get("role")
+        node_result["resolved_serial"] = record.get("serial")
+
+        node_paths = per_node_paths.get(node, paths)
+        node_result["resolved_paths"] = list(node_paths)
+
+        if not node_paths:
+            raise ValueError(
+                f"No telemetry paths resolved for node {node}"
+            )
+
+        print(
+            f"[GNMI-STREAM-RESOLVE] "
+            f"node={node} target={target}"
+        )
+
+        for sub_path in node_paths:
+            iface = _extract_interface_from_path(sub_path)
+
+            if iface:
+                valid_ifaces = topology_node_interfaces.get(
+                    str(node),
+                    set(),
+                )
+
+                if valid_ifaces and iface not in valid_ifaces:
+                    print(
+                        f"[GNMI-STREAM-SKIP] "
+                        f"node={node} interface={iface} "
+                        f"reason=interface_not_present_on_node"
+                    )
+                    continue
+
+            print(
+                f"[GNMI-STREAM] "
+                f"node={node} sub_path={sub_path}"
+            )
+
+            stream_result = run_gnmic_subscribe(
+                telemetry_server=telemetry_server,
+                target=target,
+                sub_path=sub_path,
+                timeout=timeout,
+                ssh_user=ssh_user,
+                duration_seconds=duration_seconds,
+                stream_mode=stream_mode,
+                sample_interval=sample_interval,
+            )
+
+            node_result["subscriptions"].append(stream_result)
+            node_result["subscriptions_total"] += 1
+            node_result["update_count"] += int(
+                stream_result.get("update_count", 0)
+            )
+
+            if stream_result.get("unexpected_disconnect"):
+                node_result["unexpected_disconnects"] += 1
+
+            if stream_result.get("status") == "pass":
+                node_result["subscriptions_passed"] += 1
+            else:
+                node_result["subscriptions_failed"] += 1
+                node_result["status"] = "fail"
+
+                node_result["errors"].append(
+                    f"path {sub_path}: "
+                    f"stream validation failed"
+                )
+
+    except Exception as exc:
+        node_result["status"] = "fail"
+        node_result["errors"].append(str(exc))
+        node_result["resolved_paths"] = list(node_paths)
+
+    return node_result
+
+
+def collect_stream_health(
+    telemetry_server: str,
+    ssh_user: str,
+    nodes: List[str],
+    paths: List[str],
+    inventory: Dict[str, Any],
+    timeout: int,
+    profile: str,
+    source_type: str,
+    run_id: str,
+    default_gnmi_port: int,
+    topology_path: str,
+    duration_seconds: int = 30,
+    stream_mode: str = "sample",
+    sample_interval: str = "5s",
+    per_node_paths_override: Optional[
+        Dict[str, List[str]]
+    ] = None,
+    topology_node_interfaces: Dict[str, set] = None,
+) -> Dict[str, Any]:
+
+    progress = ProgressLogger(
+        progress_log_path_for_run(run_id)
+    )
+    progress.stage("GNMI_STREAM_HEALTH")
+    progress.info(f"profile={profile}")
+    progress.info(f"node_count={len(nodes)}")
+
+    inventory_indexes = build_inventory_indexes(inventory)
+
+    per_node_paths = (
+        per_node_paths_override
+        if per_node_paths_override is not None
+        else expand_profile_paths_for_nodes(
+            paths=paths,
+            nodes=nodes,
+            topology_path=topology_path,
+        )
+    )
+
+    report: Dict[str, Any] = {
+        "generated_at": utc_now_iso(),
+        "source_type": source_type,
+        "run_id": run_id,
+        "telemetry_server": telemetry_server,
+        "profile": profile,
+        "path_templates": paths,
+        "stream_mode": stream_mode,
+        "sample_interval": (
+            sample_interval
+            if stream_mode == "sample"
+            else None
+        ),
+        "duration_seconds": int(duration_seconds),
+        "status": "pass",
+        "nodes": [],
+        "nodes_total": len(nodes),
+        "nodes_passed": 0,
+        "nodes_failed": 0,
+        "subscriptions_total": 0,
+        "subscriptions_passed": 0,
+        "subscriptions_failed": 0,
+        "update_count": 0,
+        "unexpected_disconnects": 0,
+    }
+
+    if not nodes:
+        report["status"] = "fail"
+        report["errors"] = [
+            "No nodes supplied for gNMI stream validation"
+        ]
+        return report
+
+    max_workers = min(6, len(nodes))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _collect_stream_node,
+                node=node,
+                telemetry_server=telemetry_server,
+                ssh_user=ssh_user,
+                paths=paths,
+                per_node_paths=per_node_paths,
+                inventory_indexes=inventory_indexes,
+                timeout=timeout,
+                default_gnmi_port=default_gnmi_port,
+                topology_node_interfaces=(
+                    topology_node_interfaces or {}
+                ),
+                duration_seconds=duration_seconds,
+                stream_mode=stream_mode,
+                sample_interval=sample_interval,
+            ): node
+            for node in nodes
+        }
+
+        for future in as_completed(futures):
+            node = futures[future]
+
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = {
+                    "node": node,
+                    "status": "fail",
+                    "errors": [str(exc)],
+                    "subscriptions": [],
+                    "subscriptions_total": 0,
+                    "subscriptions_passed": 0,
+                    "subscriptions_failed": 0,
+                    "update_count": 0,
+                    "unexpected_disconnects": 0,
+                }
+
+            report["nodes"].append(result)
+
+            if result.get("status") == "pass":
+                report["nodes_passed"] += 1
+            else:
+                report["nodes_failed"] += 1
+
+            report["subscriptions_total"] += int(
+                result.get("subscriptions_total", 0)
+            )
+            report["subscriptions_passed"] += int(
+                result.get("subscriptions_passed", 0)
+            )
+            report["subscriptions_failed"] += int(
+                result.get("subscriptions_failed", 0)
+            )
+            report["update_count"] += int(
+                result.get("update_count", 0)
+            )
+            report["unexpected_disconnects"] += int(
+                result.get("unexpected_disconnects", 0)
+            )
+
+    if (
+        report["nodes_failed"] > 0
+        or report["subscriptions_failed"] > 0
+        or report["subscriptions_total"] == 0
+    ):
+        report["status"] = "fail"
+
+    return report
+
+
+
+
 
 def extract_json_objects_from_stdout(stdout_text: str) -> List[Dict[str, Any]]:
     text = stdout_text.strip()
