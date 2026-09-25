@@ -19,6 +19,7 @@ from controller.run_rca_case import (
     telemetry_json_path,
     build_phase_sample_paths,
 )
+from controller.snmp_monitor import collect_snmp_health
 from controller.telemetry_monitor import (
     DEFAULT_CATALOG,
     DEFAULT_INVENTORY,
@@ -117,6 +118,39 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             ),
             "rca": (
                 "Telemetry validation reports collection health "
+                "without event-induced disturbance."
+            ),
+        },
+    },
+    "snmp_poll_validation": {
+        "stress_mode": "noop",
+        "target_type": "none",
+        "strict_telemetry": True,
+        "telemetry_validation_mode": "snmp_poll",
+        "required_validation_domains": [
+            "telemetry",
+            "platform",
+        ],
+        "not_applicable_validation_domains": [
+            "event",
+            "impact",
+            "recovery",
+        ],
+        "description": (
+            "Validate SNMP polling health across selected fabric nodes "
+            "without injecting a fabric fault."
+        ),
+        "tier": "telemetry",
+        "maturity": "experimental",
+        "release_gate": False,
+        "expected_behavior": {
+            "network": "Fabric remains stable with no injected event.",
+            "telemetry": (
+                "SNMPv2c polling returns all required scalar health "
+                "objects for every selected node."
+            ),
+            "rca": (
+                "Telemetry validation reports SNMP polling health "
                 "without event-induced disturbance."
             ),
         },
@@ -3938,6 +3972,8 @@ def run_single_scenario(
 
     stream_health: Dict[str, Any] = {}
     stream_health_path: Optional[str] = None
+    snmp_health: Dict[str, Any] = {}
+    snmp_health_path: Optional[str] = None
 
     progress.stage("STRESS_EVENT_EXECUTION")
     progress.info(f"stress_run_id={actual_stress_run_id}")
@@ -4096,6 +4132,61 @@ def run_single_scenario(
                 "gnmi_stream_health_collection_failed="
                 f"{exc}"
             )
+    if (
+        scenario.get("telemetry_validation_mode")
+        == "snmp_poll"
+    ):
+        progress.stage("SNMP_POLL_VALIDATION")
+        progress.info(
+            "Collecting SNMPv2c polling health evidence"
+        )
+        try:
+            telemetry_inventory = load_telemetry_inventory(
+                DEFAULT_INVENTORY
+            )
+            snmp_health = collect_snmp_health(
+                telemetry_server=DEFAULT_TELEMETRY_SERVER,
+                ssh_user="root",
+                nodes=telemetry_nodes,
+                inventory=telemetry_inventory,
+                timeout=timeout,
+                run_id=rca_run_id,
+            )
+            snmp_dir = (
+                BASE_DIR
+                / "artifacts"
+                / "campaigns"
+                / rca_run_id
+            )
+            snmp_dir.mkdir(parents=True, exist_ok=True)
+            snmp_health_path = str(
+                snmp_dir / "snmp_poll_health.json"
+            )
+            snmp_health["artifact_path"] = snmp_health_path
+            atomic_write_json(
+                snmp_health_path,
+                snmp_health,
+            )
+            progress.info(
+                "snmp_poll_health_status="
+                f"{snmp_health.get('status')}"
+            )
+            progress.info(
+                "snmp_poll_health_nodes="
+                f"{snmp_health.get('nodes_passed')}/"
+                f"{snmp_health.get('nodes_total')}"
+            )
+            progress.info(
+                "snmp_poll_health_path="
+                f"{snmp_health_path}"
+            )
+        except Exception as exc:
+            snmp_health = {}
+            progress.info(
+                "snmp_poll_health_collection_failed="
+                f"{exc}"
+            )
+
     progress.stage("RCA_CASE_EXECUTION")
     t0 = time.time()
 
@@ -4723,6 +4814,7 @@ def run_single_scenario(
             # explicit platform evidence or hard failure signals are present.
             platform_health=platform_health,
             stream_health=stream_health,
+            snmp_health=snmp_health,
         ).build()
     )
 
@@ -4775,6 +4867,8 @@ def run_single_scenario(
         "telemetry_health": ui_validation.get("telemetry_health", {}),
         "gnmi_stream_health": stream_health,
         "gnmi_stream_health_path": stream_health_path,
+        "snmp_poll_health": snmp_health,
+        "snmp_poll_health_path": snmp_health_path,
         "bug_candidate_signals": ui_validation.get("bug_candidate_signals", []),
         "stress_classification": ui_validation.get("stress_classification", {}),
         "cos_hotspot_correlation": cos_hotspot_path,
