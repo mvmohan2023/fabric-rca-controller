@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from controller.telemetry_monitor import build_inventory_indexes, resolve_inventory_record
 
 
-DEFAULT_SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "public")
+DEFAULT_SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "")
 DEFAULT_SNMP_OIDS = {
     "sys_name": "1.3.6.1.2.1.1.5.0",
     "sys_uptime": "1.3.6.1.2.1.1.3.0",
@@ -24,7 +24,7 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def build_snmpget_command(
+def build_snmpwalk_command(
     telemetry_server: str,
     target: str,
     timeout: int,
@@ -32,17 +32,22 @@ def build_snmpget_command(
     community: str = DEFAULT_SNMP_COMMUNITY,
     oids: Dict[str, str] | None = None,
 ) -> str:
-    """Build an SNMPv2c GET executed from the telemetry server."""
+    """Build an SNMPv2c walk executed from the telemetry server."""
     oid_map = dict(oids or DEFAULT_SNMP_OIDS)
+    if not community:
+        raise ValueError("SNMP community is not configured; set SNMP_COMMUNITY")
     args = [
-        "snmpget",
+        "snmpwalk",
         "-v2c",
         "-c",
         community,
         "-t",
         str(max(1, int(timeout))),
         "-r",
-        "0",
+        "1",
+        "-Cr40",
+        "-On",
+        "-Oe",
         target,
         *oid_map.values(),
     ]
@@ -55,7 +60,7 @@ def build_snmpget_command(
     )
 
 
-def run_snmpget(
+def run_snmpwalk(
     telemetry_server: str,
     target: str,
     timeout: int,
@@ -63,9 +68,9 @@ def run_snmpget(
     community: str = DEFAULT_SNMP_COMMUNITY,
     oids: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
-    """Run one deterministic SNMPv2c health query."""
+    """Run one deterministic SNMPv2c health walk."""
     oid_map = dict(oids or DEFAULT_SNMP_OIDS)
-    cmd = build_snmpget_command(
+    cmd = build_snmpwalk_command(
         telemetry_server=telemetry_server,
         target=target,
         timeout=timeout,
@@ -118,7 +123,7 @@ def _collect_snmp_node(
         target = str(record.get("mgt_ip") or "").strip()
         if not target:
             raise ValueError(f"inventory record for {node} has no management IP")
-        result = run_snmpget(
+        result = run_snmpwalk(
             telemetry_server=telemetry_server,
             target=target,
             timeout=timeout,
