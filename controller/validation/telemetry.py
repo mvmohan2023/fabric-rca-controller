@@ -228,6 +228,110 @@ def _evaluate_stream_telemetry(
         metrics=metrics,
     )
 
+def _evaluate_snmp_poll(
+    *,
+    snmp_health: Dict[str, Any],
+    strict_telemetry: bool,
+) -> ValidationResult:
+    """Evaluate SNMP polling health evidence."""
+
+    if not snmp_health:
+        return ValidationResult.inconclusive_result(
+            summary=(
+                "SNMP polling health could not be validated because "
+                "collector evidence is unavailable."
+            ),
+            confidence=0.0,
+            reasons=["SNMP polling health evidence was not provided."],
+            evidence=[],
+            metrics={"validation_mode": "snmp_poll"},
+        )
+
+    status = str(snmp_health.get("status") or "").strip().lower()
+    nodes_total = int(snmp_health.get("nodes_total") or 0)
+    nodes_passed = int(snmp_health.get("nodes_passed") or 0)
+    nodes_failed = int(snmp_health.get("nodes_failed") or 0)
+    oids_requested = int(snmp_health.get("oids_requested") or 0)
+    oids_received = int(snmp_health.get("oids_received") or 0)
+    path = snmp_health.get("artifact_path") or snmp_health.get("path")
+    evidence = [str(path)] if path else []
+    metrics = {
+        "validation_mode": "snmp_poll",
+        "snmp_status": status,
+        "nodes_total": nodes_total,
+        "nodes_passed": nodes_passed,
+        "nodes_failed": nodes_failed,
+        "oids_requested": oids_requested,
+        "oids_received": oids_received,
+        "strict_telemetry": strict_telemetry,
+    }
+
+    missing = []
+    if not status:
+        missing.append("SNMP collector status is unavailable.")
+    if nodes_total <= 0:
+        missing.append("No nodes were evaluated by the SNMP collector.")
+    if oids_requested <= 0:
+        missing.append("No required SNMP objects were requested.")
+    if missing:
+        return ValidationResult.inconclusive_result(
+            summary="SNMP polling evidence is incomplete.",
+            confidence=0.0,
+            reasons=missing,
+            evidence=evidence,
+            metrics=metrics,
+        )
+
+    failures = []
+    if status == "fail":
+        failures.append("The SNMP collector reported failed health.")
+    if nodes_failed > 0:
+        failures.append(
+            f"{nodes_failed} node(s) failed SNMP polling validation."
+        )
+    if oids_received != oids_requested:
+        failures.append(
+            f"Received {oids_received}/{oids_requested} required SNMP objects."
+        )
+    if failures:
+        return ValidationResult.fail_result(
+            summary="SNMP polling telemetry validation failed.",
+            confidence=1.0,
+            reasons=failures,
+            evidence=evidence,
+            metrics=metrics,
+        )
+
+    if status != "pass":
+        return ValidationResult.inconclusive_result(
+            summary="SNMP polling health could not be conclusively validated.",
+            confidence=0.0,
+            reasons=[f"Unsupported or incomplete SNMP status: {status}."],
+            evidence=evidence,
+            metrics=metrics,
+        )
+
+    if nodes_passed != nodes_total:
+        return ValidationResult.inconclusive_result(
+            summary="SNMP polling node accounting is incomplete.",
+            confidence=0.0,
+            reasons=["Not all evaluated nodes are accounted for as passed."],
+            evidence=evidence,
+            metrics=metrics,
+        )
+
+    return ValidationResult.pass_result(
+        summary="SNMP polling health passed for all evaluated nodes.",
+        confidence=1.0,
+        reasons=[
+            f"{nodes_passed}/{nodes_total} nodes passed SNMP polling.",
+            f"{oids_received}/{oids_requested} required SNMP objects were received.",
+        ],
+        evidence=evidence,
+        metrics=metrics,
+    )
+
+
 def evaluate_telemetry(
     *,
     evidence_rollup: Dict[str, Any],
@@ -235,6 +339,7 @@ def evaluate_telemetry(
     post_sample_health: List[Dict[str, Any]] | None = None,
     scenario: Dict[str, Any] | None = None,
     stream_health: Dict[str, Any] | None = None,
+    snmp_health: Dict[str, Any] | None = None,
 ) -> ValidationResult:
 
     """Evaluate telemetry collection continuity and health.
@@ -260,10 +365,22 @@ def evaluate_telemetry(
         stream_health or {}
     )
 
+    snmp_health = dict(
+        snmp_health or {}
+    )
+
     telemetry_validation_mode = str(
         scenario.get("telemetry_validation_mode")
         or "snapshot"
     ).strip().lower()
+
+    if telemetry_validation_mode == "snmp_poll":
+        return _evaluate_snmp_poll(
+            snmp_health=snmp_health,
+            strict_telemetry=bool(
+                scenario.get("strict_telemetry")
+            ),
+        )
 
     if telemetry_validation_mode == "stream":
         return _evaluate_stream_telemetry(
