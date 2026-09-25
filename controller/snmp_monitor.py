@@ -45,7 +45,6 @@ def build_snmpwalk_command(
         str(max(1, int(timeout))),
         "-r",
         "1",
-        "-Cr40",
         "-On",
         "-Oe",
         target,
