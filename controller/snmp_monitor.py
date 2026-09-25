@@ -24,7 +24,7 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def build_snmpwalk_command(
+def build_snmp_command(
     telemetry_server: str,
     target: str,
     timeout: int,
@@ -32,12 +32,12 @@ def build_snmpwalk_command(
     community: str = DEFAULT_SNMP_COMMUNITY,
     oids: Dict[str, str] | None = None,
 ) -> str:
-    """Build an SNMPv2c walk executed from the telemetry server."""
+    """Build an SNMPv2c command executed from the telemetry server."""
     oid_map = dict(oids or DEFAULT_SNMP_OIDS)
     if not community:
         raise ValueError("SNMP community is not configured; set SNMP_COMMUNITY")
     args = [
-        "snmpwalk",
+        "snmpget",
         "-v2c",
         "-c",
         community,
@@ -59,7 +59,7 @@ def build_snmpwalk_command(
     )
 
 
-def run_snmpwalk(
+def run_snmpget(
     telemetry_server: str,
     target: str,
     timeout: int,
@@ -67,9 +67,9 @@ def run_snmpwalk(
     community: str = DEFAULT_SNMP_COMMUNITY,
     oids: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
-    """Run one deterministic SNMPv2c health walk."""
+    """Run one deterministic SNMPv2c health query."""
     oid_map = dict(oids or DEFAULT_SNMP_OIDS)
-    cmd = build_snmpwalk_command(
+    cmd = build_snmp_command(
         telemetry_server=telemetry_server,
         target=target,
         timeout=timeout,
@@ -122,7 +122,7 @@ def _collect_snmp_node(
         target = str(record.get("mgt_ip") or "").strip()
         if not target:
             raise ValueError(f"inventory record for {node} has no management IP")
-        result = run_snmpwalk(
+        result = run_snmpget(
             telemetry_server=telemetry_server,
             target=target,
             timeout=timeout,
