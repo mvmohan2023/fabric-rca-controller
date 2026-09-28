@@ -3714,6 +3714,7 @@ def run_single_scenario(
     interface: Optional[str],
     targets: Optional[str],
     bgp_targets: Optional[str],
+    bfd_targets: Optional[str],
     selected_nodes: Optional[str],
     one_per_node: bool,
     ui_server_url: str,
