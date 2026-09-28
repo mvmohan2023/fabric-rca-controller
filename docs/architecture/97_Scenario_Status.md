@@ -96,7 +96,11 @@ Evidence:
 - PRE/POST platform validation passed
 - Engineering Validation overall status PASS
 - Live run: snmp_poll_leaf2_20260928_202919
-- Juniper operational-health MIB expansion remains pending
+- Juniper jnxOperatingTable collection live-qualified on leaf2
+- 6/6 Juniper operating-health metric walks passed: temperature, CPU, installed memory, CPU 1/5/15-minute averages
+- Full integration regression PASS: snmp_jnx_leaf2_20260928_214226
+- Scalar health remained 3/3 and Juniper operating-health collection remained 6/6
+- Operational-health threshold policy remains pending; collection PASS is not yet a device-health threshold verdict
 
 Streaming
 
