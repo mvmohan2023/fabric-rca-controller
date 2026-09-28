@@ -144,7 +144,7 @@ BGP Family
 
 Current Task
 
-Validation Capability — Juniper SNMP operational-health validation policy
+Validation Capability — complete SNMP telemetry milestone
 
 Next Task
 
@@ -255,8 +255,11 @@ SNMP Poll
 - Full integration regression PASS: snmp_jnx_leaf2_20260928_214226
 - Integrated artifact: scalar 3/3, Juniper operating-health 6/6
 - Collection success is distinct from device-health threshold verdict
-- Next action: define scenario-aware Juniper operational-health validation policy
-- Multi-node qualification remains pending
+- Juniper collection-completeness validation policy implemented
+- Positive offline validation: scalar 3/3 + Juniper 6/6 => telemetry PASS
+- Negative offline validation: simulated cpu_5min_pct walk failure => telemetry FAIL (5/6)
+- CPU/temperature value thresholds remain separate from collection validation
+- Next action: close SNMP telemetry milestone; broader multi-node qualification remains pending
 
 ---
 
