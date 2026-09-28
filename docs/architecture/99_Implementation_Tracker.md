@@ -144,7 +144,7 @@ BGP Family
 
 Current Task
 
-Validation Capability — SNMP Poll live qualification and Juniper MIB health expansion
+Validation Capability — Juniper SNMP operational-health validation policy
 
 Next Task
 
@@ -250,8 +250,13 @@ SNMP Poll
 - Platform PRE/POST validation: PASS
 - Overall Engineering Validation: PASS
 - Run ID: snmp_poll_leaf2_20260928_202919
+- Juniper jnxOperatingTable collector live-qualified on leaf2
+- 6/6 Juniper metric walks passed: temperature, CPU, installed memory, CPU 1/5/15-minute averages
+- Full integration regression PASS: snmp_jnx_leaf2_20260928_214226
+- Integrated artifact: scalar 3/3, Juniper operating-health 6/6
+- Collection success is distinct from device-health threshold verdict
+- Next action: define scenario-aware Juniper operational-health validation policy
 - Multi-node qualification remains pending
-- Juniper operational-health MIB expansion remains pending
 
 ---
 
