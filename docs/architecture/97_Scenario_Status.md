@@ -100,7 +100,10 @@ Evidence:
 - 6/6 Juniper operating-health metric walks passed: temperature, CPU, installed memory, CPU 1/5/15-minute averages
 - Full integration regression PASS: snmp_jnx_leaf2_20260928_214226
 - Scalar health remained 3/3 and Juniper operating-health collection remained 6/6
-- Operational-health threshold policy remains pending; collection PASS is not yet a device-health threshold verdict
+- Juniper operating-health collection-completeness policy validated offline
+- Positive policy test: scalar 3/3 + Juniper 6/6 => telemetry PASS
+- Negative policy test: simulated cpu_5min_pct walk failure => telemetry FAIL (5/6)
+- CPU/temperature threshold verdicts remain intentionally separate; collection PASS is not a device-health threshold verdict
 
 Streaming
 
