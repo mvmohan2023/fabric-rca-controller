@@ -19,6 +19,36 @@ DEFAULT_SNMP_OIDS = {
     "sys_descr": "1.3.6.1.2.1.1.1.0",
 }
 
+# JUNIPER-MIB jnxOperatingTable columns. Numeric OIDs intentionally avoid
+# runtime dependency on local MIB loading on the telemetry server.
+JNX_OPERATING_BASE_OID = "1.3.6.1.4.1.2636.3.1.13.1"
+JNX_OPERATING_COLUMNS = {
+    "temperature_c": {
+        "column": 30,
+        "unit": "celsius",
+    },
+    "cpu_pct": {
+        "column": 8,
+        "unit": "percent",
+    },
+    "memory_mb": {
+        "column": 15,
+        "unit": "megabytes",
+    },
+    "cpu_1min_pct": {
+        "column": 23,
+        "unit": "percent",
+    },
+    "cpu_5min_pct": {
+        "column": 24,
+        "unit": "percent",
+    },
+    "cpu_15min_pct": {
+        "column": 25,
+        "unit": "percent",
+    },
+}
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -108,6 +138,129 @@ def run_snmpget(
     }
 
 
+
+
+def build_snmpwalk_command(
+    telemetry_server: str,
+    target: str,
+    oid: str,
+    timeout: int,
+    ssh_user: str,
+    community: str = DEFAULT_SNMP_COMMUNITY,
+) -> str:
+    """Build a numeric-OID SNMP walk executed from the telemetry server."""
+    if not community:
+        raise ValueError("SNMP community is not configured; set SNMP_COMMUNITY")
+    args = [
+        "snmpwalk",
+        "-v2c",
+        "-c",
+        community,
+        "-t",
+        str(max(1, int(timeout))),
+        "-r",
+        "1",
+        "-On",
+        "-Oe",
+        target,
+        oid,
+    ]
+    inner_cmd = " ".join(shlex.quote(str(arg)) for arg in args)
+    return (
+        f"ssh -o StrictHostKeyChecking=no "
+        f"-o ConnectTimeout={max(1, int(timeout))} "
+        f"{shlex.quote(ssh_user)}@{shlex.quote(telemetry_server)} "
+        f"{shlex.quote(inner_cmd)}"
+    )
+
+
+def _parse_numeric_walk(stdout_text: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for raw_line in (stdout_text or "").splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        oid_text, value_text = [part.strip() for part in line.split("=", 1)]
+        typed_value = value_text
+        value: Any = value_text
+        if ":" in value_text:
+            _, raw_value = value_text.split(":", 1)
+            raw_value = raw_value.strip()
+            try:
+                value = int(raw_value)
+            except ValueError:
+                value = raw_value
+        rows.append(
+            {
+                "oid": oid_text.lstrip("."),
+                "typed_value": typed_value,
+                "value": value,
+            }
+        )
+    return rows
+
+
+def collect_juniper_operating_health(
+    *,
+    telemetry_server: str,
+    target: str,
+    timeout: int,
+    ssh_user: str,
+    community: str = DEFAULT_SNMP_COMMUNITY,
+) -> Dict[str, Any]:
+    """Collect raw Juniper jnxOperatingTable health columns.
+
+    Zero is retained because JUNIPER-MIB defines it as unavailable or
+    inapplicable for these objects. Threshold policy is intentionally not
+    applied here; this collector records evidence only.
+    """
+    metrics: Dict[str, Any] = {}
+    overall_status = "pass"
+    for name, spec in JNX_OPERATING_COLUMNS.items():
+        oid = f"{JNX_OPERATING_BASE_OID}.{spec['column']}"
+        cmd = build_snmpwalk_command(
+            telemetry_server=telemetry_server,
+            target=target,
+            oid=oid,
+            timeout=timeout,
+            ssh_user=ssh_user,
+            community=community,
+        )
+        proc = subprocess.run(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(int(timeout) * 2 + 15, 30),
+        )
+        rows = _parse_numeric_walk(proc.stdout or "")
+        populated = [
+            row
+            for row in rows
+            if isinstance(row.get("value"), int) and row.get("value") != 0
+        ]
+        metric_status = "pass" if proc.returncode == 0 and rows else "fail"
+        if metric_status == "fail":
+            overall_status = "fail"
+        metrics[name] = {
+            "status": metric_status,
+            "oid": oid,
+            "unit": spec["unit"],
+            "rows_total": len(rows),
+            "rows_populated": len(populated),
+            "rows": rows,
+            "stderr": (proc.stderr or "").strip(),
+        }
+
+    return {
+        "status": overall_status,
+        "source": "JUNIPER-MIB::jnxOperatingTable",
+        "base_oid": JNX_OPERATING_BASE_OID,
+        "target": target,
+        "metrics": metrics,
+    }
+
 def _collect_snmp_node(
     *,
     node: str,
@@ -129,11 +282,21 @@ def _collect_snmp_node(
             ssh_user=ssh_user,
             community=community,
         )
+        juniper_operating_health: Dict[str, Any] = {}
+        if result.get("status") == "pass":
+            juniper_operating_health = collect_juniper_operating_health(
+                telemetry_server=telemetry_server,
+                target=target,
+                timeout=timeout,
+                ssh_user=ssh_user,
+                community=community,
+            )
         return {
             "node": node,
             "device": record.get("device"),
             "target": target,
             **result,
+            "juniper_operating_health": juniper_operating_health,
         }
     except Exception as exc:
         return {
