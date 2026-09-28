@@ -4188,327 +4188,380 @@ def run_single_scenario(
                 f"{exc}"
             )
 
-    progress.stage("RCA_CASE_EXECUTION")
-    t0 = time.time()
-
-    # Route churn is a control-plane route event, not an ECMP
-    # member/interface degradation event. Do not manufacture
-    # lo0.0 as an ECMP recovery target.
-    enable_ecmp_recovery_analysis = (
-        scenario_name
-        == "ecmp_member_degraded_hold_restore"
+    telemetry_only_scenario = (
+        scenario.get("stress_mode") == "noop"
+        and scenario.get("target_type") == "none"
+        and scenario.get("telemetry_validation_mode") in {
+            "stream",
+            "snmp_poll",
+        }
     )
 
-    rca_ecmp_node = (
-        rca_node
-        if enable_ecmp_recovery_analysis
-        else None
-    )
-
-    rca_ecmp_interface = (
-        rca_interface
-        if enable_ecmp_recovery_analysis
-        else None
-    )
-
-    progress.info(
-        "ecmp_recovery_analysis_enabled="
-        f"{enable_ecmp_recovery_analysis}"
-    )
-    case_summary_path = run_rca_case(
-        rca_run_id=rca_run_id,
-        src=src,
-        dst=dst,
-        intent_name=intent_name,
-        nodes=nodes,
-        profile=profile,
-        phase_profile=phase_profile,
-        timeout=timeout,
-        topology=topology,
-        top_n=top_n,
-        ixia_inventory=ixia_inventory,
-        ixia_session_id=ixia_session_id,
-        running_wait=running_wait,
-        post_wait=post_wait,
-        resume_after_post=resume_after_post,
-        stress_orchestrator_report=stress_report_path,
-        enable_live_monitor=enable_live_monitor,
-        live_monitor_iterations=live_monitor_iterations,
-        live_monitor_interval=live_monitor_interval,
-        enable_port_stats=enable_port_stats,
-
-        # Required only for ECMP member recovery analysis.
-        node=rca_ecmp_node,
-        interface=rca_ecmp_interface,
-
-        # phase-aware knobs
-        baseline_window=baseline_window,
-        running_decay=running_decay,
-        settle_gap=settle_gap,
-        post_window=post_window,
-        post_sample_count=post_sample_count,
-        post_sample_interval=post_sample_interval,
-        ecmp_analysis_node=ecmp_analysis_node,
-        ecmp_analysis_interface=ecmp_analysis_interface,
-        ecmp_analysis_targets=ecmp_analysis_targets,
-    )
-    progress.info(f"rca_case_summary={case_summary_path}")
-    progress.info(f"rca_case_elapsed_sec={time.time() - t0:.1f}")
-
-    progress.stage("RCA_UI_REPORT_BUILD")
-    t0 = time.time()
-
-    # Initial UI build from RCA case summary
-    ui_report_path = build_ui_report(case_summary_path)
-
-    # -------------------------------------------------------------------------
-    # Load phase-based telemetry references for CoS correlation / phase injection
-    # -------------------------------------------------------------------------
-    case_summary_data = load_json(case_summary_path)
-    files = case_summary_data.get("files", {}) or {}
-
-    baseline_telemetry_path = files.get("baseline_telemetry") or files.get("baseline_no_churn_telemetry")
-    running_telemetry_path = files.get("running_telemetry")
-    post_telemetry_path = files.get("post_telemetry")
-
-    pre_sample_paths, post_sample_paths = build_phase_sample_paths(rca_run_id, phase_profile)
-
-    # legacy fallback for older runs
-    legacy_telemetry_reference_path = (
-        files.get("running_telemetry")
-        or files.get("pre_telemetry")
-        or files.get("post_telemetry")
-    )
-
-    progress.info(f"baseline_telemetry_path={baseline_telemetry_path}")
-    progress.info(f"running_telemetry_path={running_telemetry_path}")
-    progress.info(f"post_telemetry_path={post_telemetry_path}")
-    progress.info(f"legacy_telemetry_reference_path={legacy_telemetry_reference_path}")
-    progress.info(f"pre_sample_paths={pre_sample_paths}")
-    progress.info(f"post_sample_paths={post_sample_paths}")
-
-    if not baseline_telemetry_path or not running_telemetry_path or not post_telemetry_path:
-        raise RuntimeError(
-            "Missing telemetry paths for phase delta injection: "
-            f"baseline={baseline_telemetry_path}, "
-            f"running={running_telemetry_path}, "
-            f"post={post_telemetry_path}"
+    if telemetry_only_scenario:
+        progress.stage("TELEMETRY_ONLY_VALIDATION")
+        progress.info(
+            "Skipping congestion/RoCE/intent RCA for targetless "
+            "no-fault telemetry validation scenario"
         )
-
-    # First phase injection after initial UI build
-    inject_phase_delta_into_ui_report(
-        ui_report_path=ui_report_path,
-        baseline_telemetry_path=baseline_telemetry_path,
-        running_telemetry_path=running_telemetry_path,
-        post_telemetry_path=post_telemetry_path,
-        pre_sample_paths=pre_sample_paths,
-        post_sample_paths=post_sample_paths,
-    )
-    progress.info("phase_delta_injected_into_ui_report=true")
-
-    cos_hotspot_path = None
-    cos_hotspot_data: Dict[str, Any] = {}
-
-    # -------------------------------------------------------------------------
-    # Prefer 3-phase baseline/running/post correlation
-    # -------------------------------------------------------------------------
-    have_phase_telemetry = bool(
-        baseline_telemetry_path and running_telemetry_path and post_telemetry_path
-    )
-
-    if have_phase_telemetry or legacy_telemetry_reference_path:
-        try:
-            progress.stage("COS_HOTSPOT_CORRELATION")
-
-            if have_phase_telemetry:
-                progress.info("cos_hotspot_mode=phase_aware")
-                progress.info(f"cos_baseline_reference={baseline_telemetry_path}")
-                progress.info(f"cos_running_reference={running_telemetry_path}")
-                progress.info(f"cos_post_reference={post_telemetry_path}")
-
-                cos_hotspot_path = run_cos_hotspot_correlation(
-                    rca_run_id=rca_run_id,
-                    ui_report_path=ui_report_path,
-                    baseline_reference_path=baseline_telemetry_path,
-                    running_reference_path=running_telemetry_path,
-                    post_reference_path=post_telemetry_path,
-                    top_n=15,
-                )
-            else:
-                progress.info("cos_hotspot_mode=legacy_single_reference")
-                progress.info(f"telemetry_reference_path={legacy_telemetry_reference_path}")
-
-                cos_hotspot_path = run_cos_hotspot_correlation(
-                    rca_run_id=rca_run_id,
-                    ui_report_path=ui_report_path,
-                    telemetry_reference_path=legacy_telemetry_reference_path,
-                    top_n=15,
-                )
-
-            progress.info(f"cos_hotspot_correlation={cos_hotspot_path}")
-
-            if cos_hotspot_path:
-                try:
-                    cos_hotspot_data = load_json(cos_hotspot_path)
-
-                    # Inject CoS artifact into case summary BEFORE rebuilding UI/evidence
-                    files = case_summary_data.get("files", {}) or {}
-                    files["cos_hotspot_correlation"] = cos_hotspot_path
-                    case_summary_data["files"] = files
-
-                    # Persist phase timeline metadata into case summary for UI/reporting
-                    case_summary_data.setdefault("phase_timeline", {})
-                    case_summary_data["phase_timeline"].update(
-                        {
-                            "baseline_window": baseline_window,
-                            "running_decay": running_decay,
-                            "settle_gap": settle_gap,
-                            "post_window": post_window,
-                            "baseline_telemetry": baseline_telemetry_path,
-                            "running_telemetry": running_telemetry_path,
-                            "post_telemetry": post_telemetry_path,
-                            "pre_sample_paths": pre_sample_paths,
-                            "post_sample_paths": post_sample_paths,
-                        }
-                    )
-
-                    write_json(Path(case_summary_path), case_summary_data)
-
-                    progress.info(
-                        f"injected cos_hotspot_correlation into case summary: {cos_hotspot_path}"
-                    )
-                except Exception as exc:
-                    print(f"[WARN] failed to inject cos hotspot correlation into case summary: {exc}")
-                    progress.info(f"cos_hotspot_injection_failed={exc}")
-                    cos_hotspot_data = {}
-        except Exception as exc:
-            print(f"[WARN] cos hotspot correlation failed: {exc}")
-            progress.info(f"cos_hotspot_correlation_failed={exc}")
-
-    # -------------------------------------------------------------------------
-    # Final UI rebuild + automatic phase/ECMP enrichment
-    # -------------------------------------------------------------------------
-    # -------------------------------------------------------------------------
-    # Final UI rebuild + automatic phase/ECMP enrichment
-    # -------------------------------------------------------------------------
-    ui_report_path = build_ui_report(case_summary_path)
-
-    # Re-inject phase delta fields because rebuild can overwrite earlier injection
-    inject_phase_delta_into_ui_report(
-        ui_report_path=ui_report_path,
-        baseline_telemetry_path=baseline_telemetry_path,
-        running_telemetry_path=running_telemetry_path,
-        post_telemetry_path=post_telemetry_path,
-        pre_sample_paths=pre_sample_paths,
-        post_sample_paths=post_sample_paths,
-    )
-    progress.info("phase_delta_reinjected_after_final_ui_rebuild=true")
-
-    # Inject congestion origin / propagation analysis automatically
-    # ---------------------------------------------------------
-    # ECMP recovery RCA enrichment
-    #
-    # This analysis is meaningful only for scenarios that
-    # intentionally degrade an ECMP member. Route churn is a
-    # control-plane routing event and must not manufacture an
-    # ECMP target such as lo0.0.
-    # ---------------------------------------------------------
-
-    if enable_ecmp_recovery_analysis:
-        try:
-            inject_ecmp_recovery_view_into_ui_report(
-                case_summary_path=case_summary_path,
-                ui_report_path=ui_report_path,
-                progress=progress,
-            )
-
-            ui_after = load_json(ui_report_path)
-
-            ecmp_targets = list(
-                (
-                    (
-                        ui_after.get(
-                            "ecmp_recovery_input"
-                        )
-                        or {}
-                    ).get("targets")
-                    or {}
-                ).keys()
-            )[:5]
-
-            progress.info(
-                "ecmp_recovery_view_injection_verify_targets="
-                f"{ecmp_targets}"
-            )
-
-        except Exception as exc:
-            progress.info(
-                "ecmp_recovery_view_injection_failed="
-                f"{exc}"
-            )
-
-            print(
-                "[WARN] ECMP recovery view injection "
-                f"failed: {exc}"
-            )
-
+        stress_validation = validate_stress_report(
+            stress_report_path,
+            expected_target_count=len(targets_resolved),
+        )
+        rca_validation = {
+            "ok": True,
+            "status": "not_applicable",
+            "path": None,
+            "reason": "RCA is not applicable to telemetry-only scenarios.",
+        }
+        ui_validation = {
+            "ok": True,
+            "status": "not_applicable",
+            "path": None,
+            "event_count": 0,
+            "top_event_name": None,
+            "primary_cause": None,
+            "total_hotspots": 0,
+            "telemetry_health": {},
+            "bug_candidate_signals": [],
+            "stress_classification": {},
+        }
+        evidence_rollup = {}
+        phase_timeline = {}
+        post_sample_paths = []
+        post_sample_health = []
+        baseline_telemetry_path = None
+        running_telemetry_path = None
+        post_telemetry_path = None
+        cos_hotspot_path = None
+        cos_hotspot_data = {}
+        ui_server_ok = True
+        final_status = "INCONCLUSIVE"
+        event_ok = True
+        impact_ok = True
+        case_summary_path = None
+        ui_report_path = None
     else:
-        progress.info(
-            "ecmp_recovery_view_injection_skipped=true"
+        progress.stage("RCA_CASE_EXECUTION")
+        t0 = time.time()
+
+        # Route churn is a control-plane route event, not an ECMP
+        # member/interface degradation event. Do not manufacture
+        # lo0.0 as an ECMP recovery target.
+        enable_ecmp_recovery_analysis = (
+            scenario_name
+            == "ecmp_member_degraded_hold_restore"
         )
+
+        rca_ecmp_node = (
+            rca_node
+            if enable_ecmp_recovery_analysis
+            else None
+        )
+
+        rca_ecmp_interface = (
+            rca_interface
+            if enable_ecmp_recovery_analysis
+            else None
+        )
+
         progress.info(
-            "ecmp_recovery_view_skip_reason="
-            f"scenario={scenario_name} "
-            "does_not_require_ecmp_member_recovery"
-    )
+            "ecmp_recovery_analysis_enabled="
+            f"{enable_ecmp_recovery_analysis}"
+        )
+        case_summary_path = run_rca_case(
+            rca_run_id=rca_run_id,
+            src=src,
+            dst=dst,
+            intent_name=intent_name,
+            nodes=nodes,
+            profile=profile,
+            phase_profile=phase_profile,
+            timeout=timeout,
+            topology=topology,
+            top_n=top_n,
+            ixia_inventory=ixia_inventory,
+            ixia_session_id=ixia_session_id,
+            running_wait=running_wait,
+            post_wait=post_wait,
+            resume_after_post=resume_after_post,
+            stress_orchestrator_report=stress_report_path,
+            enable_live_monitor=enable_live_monitor,
+            live_monitor_iterations=live_monitor_iterations,
+            live_monitor_interval=live_monitor_interval,
+            enable_port_stats=enable_port_stats,
 
-    progress.info(f"ui_report_path={ui_report_path}")
-    progress.info(f"ui_report_elapsed_sec={time.time() - t0:.1f}")
-    progress.stage("VALIDATION_AND_CLASSIFICATION")
-    stress_validation = validate_stress_report(
-        stress_report_path,
-        expected_target_count=len(targets_resolved),
-    )
-    rca_validation = validate_rca_summary(
-        case_summary_path,
-        expected_stress_path=stress_report_path,
-    )
-    ui_validation = validate_ui_report(ui_report_path)
+            # Required only for ECMP member recovery analysis.
+            node=rca_ecmp_node,
+            interface=rca_ecmp_interface,
 
-    refreshed_case_summary = load_json(case_summary_path)
-    evidence_rollup = build_evidence_rollup(refreshed_case_summary)
+            # phase-aware knobs
+            baseline_window=baseline_window,
+            running_decay=running_decay,
+            settle_gap=settle_gap,
+            post_window=post_window,
+            post_sample_count=post_sample_count,
+            post_sample_interval=post_sample_interval,
+            ecmp_analysis_node=ecmp_analysis_node,
+            ecmp_analysis_interface=ecmp_analysis_interface,
+            ecmp_analysis_targets=ecmp_analysis_targets,
+        )
+        progress.info(f"rca_case_summary={case_summary_path}")
+        progress.info(f"rca_case_elapsed_sec={time.time() - t0:.1f}")
 
-    phase_timeline = {
-        "baseline_window": baseline_window,
-        "running_decay": running_decay,
-        "settle_gap": settle_gap,
-        "post_window": post_window,
-        "baseline_telemetry": baseline_telemetry_path,
-        "running_telemetry": running_telemetry_path,
-        "post_telemetry": post_telemetry_path,
-        "pre_sample_paths": pre_sample_paths,
-        "post_sample_paths": post_sample_paths,
-    }
+        progress.stage("RCA_UI_REPORT_BUILD")
+        t0 = time.time()
 
-    post_sample_health = load_post_sample_health(
-        post_sample_paths
-    )
+        # Initial UI build from RCA case summary
+        ui_report_path = build_ui_report(case_summary_path)
 
-    progress.info(
-        f"engineering_validation_post_sample_health_count="
-        f"{len(post_sample_health)}"
-    )
+        # -------------------------------------------------------------------------
+        # Load phase-based telemetry references for CoS correlation / phase injection
+        # -------------------------------------------------------------------------
+        case_summary_data = load_json(case_summary_path)
+        files = case_summary_data.get("files", {}) or {}
 
-    ui_server_ok = True
-    if not skip_ui_check:
-        ui_server_ok = check_ui_server(ui_server_url)
+        baseline_telemetry_path = files.get("baseline_telemetry") or files.get("baseline_no_churn_telemetry")
+        running_telemetry_path = files.get("running_telemetry")
+        post_telemetry_path = files.get("post_telemetry")
 
-    final_status, event_ok, impact_ok = classify_scenario_result(
-        stress_validation=stress_validation,
-        rca_validation=rca_validation,
-        ui_validation=ui_validation,
-        evidence_rollup=evidence_rollup,
-    )
+        pre_sample_paths, post_sample_paths = build_phase_sample_paths(rca_run_id, phase_profile)
+
+        # legacy fallback for older runs
+        legacy_telemetry_reference_path = (
+            files.get("running_telemetry")
+            or files.get("pre_telemetry")
+            or files.get("post_telemetry")
+        )
+
+        progress.info(f"baseline_telemetry_path={baseline_telemetry_path}")
+        progress.info(f"running_telemetry_path={running_telemetry_path}")
+        progress.info(f"post_telemetry_path={post_telemetry_path}")
+        progress.info(f"legacy_telemetry_reference_path={legacy_telemetry_reference_path}")
+        progress.info(f"pre_sample_paths={pre_sample_paths}")
+        progress.info(f"post_sample_paths={post_sample_paths}")
+
+        if not baseline_telemetry_path or not running_telemetry_path or not post_telemetry_path:
+            raise RuntimeError(
+                "Missing telemetry paths for phase delta injection: "
+                f"baseline={baseline_telemetry_path}, "
+                f"running={running_telemetry_path}, "
+                f"post={post_telemetry_path}"
+            )
+
+        # First phase injection after initial UI build
+        inject_phase_delta_into_ui_report(
+            ui_report_path=ui_report_path,
+            baseline_telemetry_path=baseline_telemetry_path,
+            running_telemetry_path=running_telemetry_path,
+            post_telemetry_path=post_telemetry_path,
+            pre_sample_paths=pre_sample_paths,
+            post_sample_paths=post_sample_paths,
+        )
+        progress.info("phase_delta_injected_into_ui_report=true")
+
+        cos_hotspot_path = None
+        cos_hotspot_data: Dict[str, Any] = {}
+
+        # -------------------------------------------------------------------------
+        # Prefer 3-phase baseline/running/post correlation
+        # -------------------------------------------------------------------------
+        have_phase_telemetry = bool(
+            baseline_telemetry_path and running_telemetry_path and post_telemetry_path
+        )
+
+        if have_phase_telemetry or legacy_telemetry_reference_path:
+            try:
+                progress.stage("COS_HOTSPOT_CORRELATION")
+
+                if have_phase_telemetry:
+                    progress.info("cos_hotspot_mode=phase_aware")
+                    progress.info(f"cos_baseline_reference={baseline_telemetry_path}")
+                    progress.info(f"cos_running_reference={running_telemetry_path}")
+                    progress.info(f"cos_post_reference={post_telemetry_path}")
+
+                    cos_hotspot_path = run_cos_hotspot_correlation(
+                        rca_run_id=rca_run_id,
+                        ui_report_path=ui_report_path,
+                        baseline_reference_path=baseline_telemetry_path,
+                        running_reference_path=running_telemetry_path,
+                        post_reference_path=post_telemetry_path,
+                        top_n=15,
+                    )
+                else:
+                    progress.info("cos_hotspot_mode=legacy_single_reference")
+                    progress.info(f"telemetry_reference_path={legacy_telemetry_reference_path}")
+
+                    cos_hotspot_path = run_cos_hotspot_correlation(
+                        rca_run_id=rca_run_id,
+                        ui_report_path=ui_report_path,
+                        telemetry_reference_path=legacy_telemetry_reference_path,
+                        top_n=15,
+                    )
+
+                progress.info(f"cos_hotspot_correlation={cos_hotspot_path}")
+
+                if cos_hotspot_path:
+                    try:
+                        cos_hotspot_data = load_json(cos_hotspot_path)
+
+                        # Inject CoS artifact into case summary BEFORE rebuilding UI/evidence
+                        files = case_summary_data.get("files", {}) or {}
+                        files["cos_hotspot_correlation"] = cos_hotspot_path
+                        case_summary_data["files"] = files
+
+                        # Persist phase timeline metadata into case summary for UI/reporting
+                        case_summary_data.setdefault("phase_timeline", {})
+                        case_summary_data["phase_timeline"].update(
+                            {
+                                "baseline_window": baseline_window,
+                                "running_decay": running_decay,
+                                "settle_gap": settle_gap,
+                                "post_window": post_window,
+                                "baseline_telemetry": baseline_telemetry_path,
+                                "running_telemetry": running_telemetry_path,
+                                "post_telemetry": post_telemetry_path,
+                                "pre_sample_paths": pre_sample_paths,
+                                "post_sample_paths": post_sample_paths,
+                            }
+                        )
+
+                        write_json(Path(case_summary_path), case_summary_data)
+
+                        progress.info(
+                            f"injected cos_hotspot_correlation into case summary: {cos_hotspot_path}"
+                        )
+                    except Exception as exc:
+                        print(f"[WARN] failed to inject cos hotspot correlation into case summary: {exc}")
+                        progress.info(f"cos_hotspot_injection_failed={exc}")
+                        cos_hotspot_data = {}
+            except Exception as exc:
+                print(f"[WARN] cos hotspot correlation failed: {exc}")
+                progress.info(f"cos_hotspot_correlation_failed={exc}")
+
+        # -------------------------------------------------------------------------
+        # Final UI rebuild + automatic phase/ECMP enrichment
+        # -------------------------------------------------------------------------
+        # -------------------------------------------------------------------------
+        # Final UI rebuild + automatic phase/ECMP enrichment
+        # -------------------------------------------------------------------------
+        ui_report_path = build_ui_report(case_summary_path)
+
+        # Re-inject phase delta fields because rebuild can overwrite earlier injection
+        inject_phase_delta_into_ui_report(
+            ui_report_path=ui_report_path,
+            baseline_telemetry_path=baseline_telemetry_path,
+            running_telemetry_path=running_telemetry_path,
+            post_telemetry_path=post_telemetry_path,
+            pre_sample_paths=pre_sample_paths,
+            post_sample_paths=post_sample_paths,
+        )
+        progress.info("phase_delta_reinjected_after_final_ui_rebuild=true")
+
+        # Inject congestion origin / propagation analysis automatically
+        # ---------------------------------------------------------
+        # ECMP recovery RCA enrichment
+        #
+        # This analysis is meaningful only for scenarios that
+        # intentionally degrade an ECMP member. Route churn is a
+        # control-plane routing event and must not manufacture an
+        # ECMP target such as lo0.0.
+        # ---------------------------------------------------------
+
+        if enable_ecmp_recovery_analysis:
+            try:
+                inject_ecmp_recovery_view_into_ui_report(
+                    case_summary_path=case_summary_path,
+                    ui_report_path=ui_report_path,
+                    progress=progress,
+                )
+
+                ui_after = load_json(ui_report_path)
+
+                ecmp_targets = list(
+                    (
+                        (
+                            ui_after.get(
+                                "ecmp_recovery_input"
+                            )
+                            or {}
+                        ).get("targets")
+                        or {}
+                    ).keys()
+                )[:5]
+
+                progress.info(
+                    "ecmp_recovery_view_injection_verify_targets="
+                    f"{ecmp_targets}"
+                )
+
+            except Exception as exc:
+                progress.info(
+                    "ecmp_recovery_view_injection_failed="
+                    f"{exc}"
+                )
+
+                print(
+                    "[WARN] ECMP recovery view injection "
+                    f"failed: {exc}"
+                )
+
+        else:
+            progress.info(
+                "ecmp_recovery_view_injection_skipped=true"
+            )
+            progress.info(
+                "ecmp_recovery_view_skip_reason="
+                f"scenario={scenario_name} "
+                "does_not_require_ecmp_member_recovery"
+        )
+
+        progress.info(f"ui_report_path={ui_report_path}")
+        progress.info(f"ui_report_elapsed_sec={time.time() - t0:.1f}")
+        progress.stage("VALIDATION_AND_CLASSIFICATION")
+        stress_validation = validate_stress_report(
+            stress_report_path,
+            expected_target_count=len(targets_resolved),
+        )
+        rca_validation = validate_rca_summary(
+            case_summary_path,
+            expected_stress_path=stress_report_path,
+        )
+        ui_validation = validate_ui_report(ui_report_path)
+
+        refreshed_case_summary = load_json(case_summary_path)
+        evidence_rollup = build_evidence_rollup(refreshed_case_summary)
+
+        phase_timeline = {
+            "baseline_window": baseline_window,
+            "running_decay": running_decay,
+            "settle_gap": settle_gap,
+            "post_window": post_window,
+            "baseline_telemetry": baseline_telemetry_path,
+            "running_telemetry": running_telemetry_path,
+            "post_telemetry": post_telemetry_path,
+            "pre_sample_paths": pre_sample_paths,
+            "post_sample_paths": post_sample_paths,
+        }
+
+        post_sample_health = load_post_sample_health(
+            post_sample_paths
+        )
+
+        progress.info(
+            f"engineering_validation_post_sample_health_count="
+            f"{len(post_sample_health)}"
+        )
+
+        ui_server_ok = True
+        if not skip_ui_check:
+            ui_server_ok = check_ui_server(ui_server_url)
+
+        final_status, event_ok, impact_ok = classify_scenario_result(
+            stress_validation=stress_validation,
+            rca_validation=rca_validation,
+            ui_validation=ui_validation,
+            evidence_rollup=evidence_rollup,
+        )
 
         # ---------------------------------------------------------
     # POST-EVENT PLATFORM HEALTH + PRE/POST DELTA
@@ -4824,6 +4877,11 @@ def run_single_scenario(
         engineering_validation_result.to_dict()
     )
 
+    if telemetry_only_scenario:
+        final_status = engineering_validation["overall_status"]
+        event_ok = True
+        impact_ok = True
+
     progress.info(
         "engineering_validation_overall_status="
         f"{engineering_validation['overall_status']}"
@@ -4949,7 +5007,7 @@ def run_single_scenario(
             run_id=rca_run_id,
             topology_path=topology,
             validation_path=str(validation_path),
-            rca_ui_report_path=ui_validation["path"],
+            rca_ui_report_path=ui_validation.get("path"),
             ixia_inventory_path=ixia_inventory,
         )
         result["topology_view"] = topology_outputs
@@ -4975,8 +5033,8 @@ def run_single_scenario(
     print(f"Resolved Targets    : {len(targets_resolved)}")
     print(f"Stress Iterations   : {stress_iterations}")
     print(f"Stress Report       : {stress_validation['path']}")
-    print(f"RCA Summary         : {rca_validation['path']}")
-    print(f"RCA UI Report       : {ui_validation['path']}")
+    print(f"RCA Summary         : {rca_validation.get('path') or 'N/A'}")
+    print(f"RCA UI Report       : {ui_validation.get('path') or 'N/A'}")
     print(f"Validation Status   : {final_status}")
     print(f"Event Execution OK  : {'YES' if event_ok else 'NO'}")
     print(f"Impact Observed     : {'YES' if impact_ok else 'NO'}")
@@ -5030,7 +5088,11 @@ def run_single_scenario(
     )
     progress.info(f"runtime_summary={runtime_summary_path}")
 
-    refreshed_ui_report = _safe_load_json(ui_validation["path"])
+    refreshed_ui_report = (
+        _safe_load_json(ui_validation["path"])
+        if ui_validation.get("path")
+        else {}
+    )
     result["congestion_origin_analysis"] = refreshed_ui_report.get("congestion_origin_analysis", {})
 
     return result
