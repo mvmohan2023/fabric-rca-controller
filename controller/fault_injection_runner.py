@@ -4784,69 +4784,6 @@ def run_single_scenario(
                 "platform_post_collection_failed="
                 f"{exc}"
             )
-    if platform_node:
-        try:
-            device_inventory = load_inventory(
-                str(
-                    BASE_DIR
-                    / "inventory"
-                    / "inventory.active.yaml"
-                )
-            )
-
-            platform_health = (
-                collect_node_platform_health(
-                    node=platform_node,
-                    inventory=device_inventory,
-                    cpu_threshold_pct=90.0,
-                    memory_threshold_pct=90.0,
-                    timeout=30,
-                )
-            )
-
-            progress.info(
-                "platform_health_status="
-                f"{platform_health.get('status')}"
-            )
-
-            progress.info(
-                "platform_health_node="
-                f"{platform_node}"
-            )
-
-            progress.info(
-                "platform_cpu_utilization_pct="
-                f"{(
-                    platform_health.get('cpu')
-                    or {}
-                ).get('utilization_pct')}"
-            )
-
-            progress.info(
-                "platform_memory_utilization_pct="
-                f"{(
-                    platform_health.get('memory')
-                    or {}
-                ).get('utilization_pct')}"
-            )
-
-
-            progress.info(
-                "platform_new_optics_alarm_count="
-                f"{platform_health.get('new_optics_alarm_count')}"
-            )
-
-            progress.info(
-                "platform_interface_error_failure_count="
-                f"{platform_health.get('interface_error_failure_count')}"
-            )
-
-        except Exception as exc:
-            progress.info(
-                "platform_health_collection_failed="
-                f"{exc}"
-        )
-
     engineering_validation_result = (
         EngineeringValidationBuilder(
             stress_validation=stress_validation,
