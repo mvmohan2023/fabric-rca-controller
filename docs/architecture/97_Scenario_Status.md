@@ -85,7 +85,18 @@ Evidence:
 - Stream-mode Engineering Validation PASS/FAIL/INCONCLUSIVE semantics validated offline
 - Runner collector and artifact plumbing validated offline
 
-SNMP
+SNMP Poll
+
+Status: Single-node live qualification complete on leaf2; broader multi-node qualification pending
+
+Evidence:
+- SNMPv2c scalar polling executed from telemetry server to leaf2 (10.83.6.4)
+- 1/1 selected node passed
+- 3/3 required SNMP scalar objects received
+- PRE/POST platform validation passed
+- Engineering Validation overall status PASS
+- Live run: snmp_poll_leaf2_20260928_202919
+- Juniper operational-health MIB expansion remains pending
 
 Streaming
 
