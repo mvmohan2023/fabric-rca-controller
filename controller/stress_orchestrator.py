@@ -2026,7 +2026,7 @@ def main():
                         "reason": "ixia/baseline args not provided",
                     }
 
-                    if args.ixia_inventory and args.baseline_nodes:
+                    if args.mode != "noop" and args.ixia_inventory and args.baseline_nodes:
                         baseline_gate = run_pre_event_traffic_baseline(
                             run_id=run_id,
                             ixia_inventory=args.ixia_inventory,
