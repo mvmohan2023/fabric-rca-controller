@@ -82,20 +82,39 @@ def evaluate_platform(
         platform_health.get("status") or ""
     ).strip().lower()
 
-    core_count = int(
-        platform_health.get("core_count")
-        or platform_health.get("cores")
-        or 0
+    def _count_value(
+        primary_key: str,
+        fallback_key: str,
+        nested_key: str,
+    ) -> int:
+        value = platform_health.get(primary_key)
+        if value is None:
+            value = platform_health.get(fallback_key)
+
+        if isinstance(value, dict):
+            value = value.get(nested_key, 0)
+        elif isinstance(value, (list, tuple, set)):
+            value = len(value)
+
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    core_count = _count_value(
+        "core_count",
+        "cores",
+        "count",
     )
-    daemon_crash_count = int(
-        platform_health.get("daemon_crash_count")
-        or platform_health.get("daemon_crashes")
-        or 0
+    daemon_crash_count = _count_value(
+        "daemon_crash_count",
+        "daemon_crashes",
+        "count",
     )
-    alarm_count = int(
-        platform_health.get("unexpected_alarm_count")
-        or platform_health.get("alarms")
-        or 0
+    alarm_count = _count_value(
+        "unexpected_alarm_count",
+        "alarms",
+        "active_count",
     )
 
     evidence = list(
