@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Validation Capability
+Validation Capability — SNMP Poll live qualification and Juniper MIB health expansion
 
 Next Task
 
-Engineering RCA Capability
+Complete SNMP telemetry milestone, then Engineering RCA Capability
 
 ---
 
@@ -238,6 +238,20 @@ Never overwrite RCA.
 Only additive changes.
 
 Always update tracker before next milestone.
+
+---
+
+# 8.1 Current Validation Evidence
+
+SNMP Poll
+
+- Single-node live qualification PASS on leaf2 (10.83.6.4)
+- SNMP telemetry: 1/1 node, 3/3 required scalar objects
+- Platform PRE/POST validation: PASS
+- Overall Engineering Validation: PASS
+- Run ID: snmp_poll_leaf2_20260928_202919
+- Multi-node qualification remains pending
+- Juniper operational-health MIB expansion remains pending
 
 ---
 
