@@ -4754,10 +4754,26 @@ def run_single_scenario(
 
 
             #
-            # Delta failures must promote the final platform status.
+            # PRE/POST comparison is the authoritative scenario-aware
+            # platform verdict. Preserve snapshot failures, but allow an
+            # inconclusive raw snapshot to become PASS when the complete
+            # delta comparison succeeds.
             #
             if platform_delta.get("status") == "fail":
                 platform_health["status"] = "fail"
+            elif (
+                platform_delta.get("status") == "pass"
+                and str(
+                    platform_health.get("status") or ""
+                ).strip().lower()
+                not in {
+                    "fail",
+                    "failed",
+                    "critical",
+                    "error",
+                }
+            ):
+                platform_health["status"] = "pass"
 
             progress.info(
                 "platform_health_status="
