@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Validation Capability — complete SNMP telemetry milestone
+Engineering RCA Capability — evidence normalization and reusable RCA model
 
 Next Task
 
-Complete SNMP telemetry milestone, then Engineering RCA Capability
+Implement additive cross-domain RCA correlation and confidence assessment
 
 ---
 
@@ -259,7 +259,16 @@ SNMP Poll
 - Positive offline validation: scalar 3/3 + Juniper 6/6 => telemetry PASS
 - Negative offline validation: simulated cpu_5min_pct walk failure => telemetry FAIL (5/6)
 - CPU/temperature value thresholds remain separate from collection validation
-- Next action: close SNMP telemetry milestone; broader multi-node qualification remains pending
+- SNMP telemetry milestone closed for framework progression
+- Broader multi-node SNMP qualification remains pending as a lab/device qualification item
+- CPU/temperature threshold rules remain a separate future rule-registry/dynamic-threshold item
+
+Engineering RCA
+
+- Current architecture source: docs/architecture/06_RCA_Framework.md
+- Start with evidence normalization and a reusable additive RCA model
+- Preserve existing RCA artifacts and UI outputs; do not overwrite existing RCA
+- Next implementation step: inspect current RCA modules/artifacts and introduce the smallest reusable normalization layer
 
 ---
 
