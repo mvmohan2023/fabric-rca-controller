@@ -228,6 +228,69 @@ def _evaluate_stream_telemetry(
         metrics=metrics,
     )
 
+def _summarize_juniper_operating_health(
+    snmp_health: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Summarize Juniper operating-health collection without inventing thresholds."""
+
+    required_metrics = (
+        "temperature_c",
+        "cpu_pct",
+        "memory_mb",
+        "cpu_1min_pct",
+        "cpu_5min_pct",
+        "cpu_15min_pct",
+    )
+    nodes = list(snmp_health.get("nodes") or [])
+    nodes_with_health = 0
+    metrics_expected = len(required_metrics) * len(nodes)
+    metrics_passed = 0
+    metrics_failed = 0
+    metrics_populated = 0
+    metric_failures: List[str] = []
+
+    for node in nodes:
+        node_name = str(node.get("node") or node.get("device") or "unknown")
+        health = dict(node.get("juniper_operating_health") or {})
+        metrics = dict(health.get("metrics") or {})
+        if health:
+            nodes_with_health += 1
+
+        for metric_name in required_metrics:
+            metric = dict(metrics.get(metric_name) or {})
+            metric_status = str(metric.get("status") or "").strip().lower()
+            if metric_status == "pass":
+                metrics_passed += 1
+            else:
+                metrics_failed += 1
+                metric_failures.append(
+                    f"{node_name}:{metric_name} status={metric_status or 'missing'}"
+                )
+
+            try:
+                populated = int(metric.get("rows_populated") or 0)
+            except (TypeError, ValueError):
+                populated = 0
+            if populated > 0:
+                metrics_populated += 1
+
+    return {
+        "required_metrics_per_node": len(required_metrics),
+        "nodes_with_juniper_health": nodes_with_health,
+        "metrics_expected": metrics_expected,
+        "metrics_passed": metrics_passed,
+        "metrics_failed": metrics_failed,
+        "metrics_populated": metrics_populated,
+        "metric_failures": metric_failures,
+        "threshold_policy_applied": False,
+        "policy_note": (
+            "Juniper operating-health collection is validated for completeness only. "
+            "No CPU or temperature threshold verdict is applied yet; installed memory "
+            "is capacity evidence, not utilization."
+        ),
+    }
+
+
 def _evaluate_snmp_poll(
     *,
     snmp_health: Dict[str, Any],
@@ -255,6 +318,7 @@ def _evaluate_snmp_poll(
     oids_received = int(snmp_health.get("oids_received") or 0)
     path = snmp_health.get("artifact_path") or snmp_health.get("path")
     evidence = [str(path)] if path else []
+    juniper_health = _summarize_juniper_operating_health(snmp_health)
     metrics = {
         "validation_mode": "snmp_poll",
         "snmp_status": status,
@@ -264,6 +328,7 @@ def _evaluate_snmp_poll(
         "oids_requested": oids_requested,
         "oids_received": oids_received,
         "strict_telemetry": strict_telemetry,
+        "juniper_operating_health": juniper_health,
     }
 
     missing = []
@@ -293,6 +358,15 @@ def _evaluate_snmp_poll(
         failures.append(
             f"Received {oids_received}/{oids_requested} required SNMP objects."
         )
+    if (
+        juniper_health["nodes_with_juniper_health"] > 0
+        and juniper_health["metrics_failed"] > 0
+    ):
+        failures.append(
+            "Juniper operating-health collection was incomplete: "
+            + "; ".join(juniper_health["metric_failures"])
+            + "."
+        )
     if failures:
         return ValidationResult.fail_result(
             summary="SNMP polling telemetry validation failed.",
@@ -320,13 +394,26 @@ def _evaluate_snmp_poll(
             metrics=metrics,
         )
 
+    reasons = [
+        f"{nodes_passed}/{nodes_total} nodes passed SNMP polling.",
+        f"{oids_received}/{oids_requested} required SNMP objects were received.",
+    ]
+
+    if juniper_health["nodes_with_juniper_health"] > 0:
+        reasons.append(
+            f"{juniper_health['metrics_passed']}/"
+            f"{juniper_health['metrics_expected']} Juniper operating-health "
+            "metric walks completed successfully."
+        )
+        reasons.append(
+            "Juniper operating-health values are evidence-only at this stage; "
+            "no CPU or temperature threshold verdict was applied."
+        )
+
     return ValidationResult.pass_result(
         summary="SNMP polling health passed for all evaluated nodes.",
         confidence=1.0,
-        reasons=[
-            f"{nodes_passed}/{nodes_total} nodes passed SNMP polling.",
-            f"{oids_received}/{oids_requested} required SNMP objects were received.",
-        ],
+        reasons=reasons,
         evidence=evidence,
         metrics=metrics,
     )
