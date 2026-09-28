@@ -173,6 +173,16 @@ def collect_snmp_health(
         report["error"] = "no nodes supplied for SNMP validation"
         return report
 
+    # Missing credentials/configuration means the SNMP test did not
+    # execute. Preserve that distinction from an executed SNMP timeout,
+    # authentication failure, or missing required object, which is FAIL.
+    if not str(community or "").strip():
+        report["status"] = "inconclusive"
+        report["error"] = (
+            "SNMP community is not configured; set SNMP_COMMUNITY"
+        )
+        return report
+
     indexes = build_inventory_indexes(inventory)
     with ThreadPoolExecutor(max_workers=min(6, len(nodes))) as pool:
         futures = {
