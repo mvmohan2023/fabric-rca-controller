@@ -448,6 +448,21 @@ def parse_args():
         type=int,
         default=30,
     )
+    parser.add_argument(
+        "--reboot-down-timeout-seconds",
+        type=int,
+        default=120,
+    )
+    parser.add_argument(
+        "--reboot-recovery-timeout-seconds",
+        type=int,
+        default=600,
+    )
+    parser.add_argument(
+        "--reboot-settle-seconds",
+        type=int,
+        default=30,
+    )
     return parser.parse_args()
 
 
