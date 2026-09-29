@@ -166,11 +166,110 @@ def normalize_fabric_evidence(
     return items
 
 
+
+def normalize_queue_cos_evidence(
+    report: Dict[str, Any],
+    *,
+    supporting_artifact: Optional[str] = None,
+) -> List[EvidenceItem]:
+    """Normalize queue/CoS hotspot evidence from an RCA UI report.
+
+    The adapter consumes the existing evidence_index shape. Feature-specific
+    classification, scoring, and threshold semantics remain owned by the
+    existing congestion/CoS analyzers.
+    """
+
+    items: List[EvidenceItem] = []
+    evidence_index = (report or {}).get("evidence_index", {}) or {}
+    if not isinstance(evidence_index, dict):
+        return items
+
+    for entity_id, entry in evidence_index.items():
+        if not isinstance(entry, dict):
+            continue
+
+        node = entry.get("node")
+        interface = entry.get("interface")
+        queue = entry.get("queue")
+        entity = str(entity_id or _entity(node, interface, queue) or "").strip() or None
+
+        common = {
+            "domain": "queue",
+            "source": "rca_ui_evidence_index",
+            "entity": entity,
+            "severity": entry.get("severity"),
+            "classification": (
+                entry.get("classification")
+                or entry.get("probable_cause")
+                or entry.get("event_delta_classification")
+            ),
+            "supporting_artifact": supporting_artifact,
+        }
+
+        metadata_base = {
+            "node": node,
+            "interface": interface,
+            "queue": queue,
+            "forwarding_class": entry.get("forwarding_class"),
+            "score": entry.get("score"),
+            "probable_cause": entry.get("probable_cause"),
+            "event_delta_classification": entry.get("event_delta_classification"),
+            "tail_linger_trend": entry.get("tail_linger_trend"),
+            "ecn_linger_trend": entry.get("ecn_linger_trend"),
+            "recovery_ratio_tail": entry.get("recovery_ratio_tail"),
+            "classification_confidence": entry.get("classification_confidence"),
+        }
+
+        for bucket_name, bucket in (
+            ("signals", entry.get("signals", {}) or {}),
+            ("delta_running", entry.get("delta_running", {}) or {}),
+            ("delta_post", entry.get("delta_post", {}) or {}),
+            ("running_metrics", entry.get("running_metrics", {}) or {}),
+        ):
+            if not isinstance(bucket, dict):
+                continue
+            for metric, value in bucket.items():
+                if value is None:
+                    continue
+                items.append(
+                    EvidenceItem(
+                        **common,
+                        metric=str(metric),
+                        observed_value=value,
+                        phase=bucket_name,
+                        metadata={**metadata_base, "evidence_bucket": bucket_name},
+                    )
+                )
+
+        for metric in (
+            "rise_tail_dropped_packets",
+            "linger_tail_dropped_packets",
+            "rise_ecn_ce_packets",
+            "linger_ecn_ce_packets",
+            "recovery_ratio_tail",
+            "classification_confidence",
+        ):
+            value = entry.get(metric)
+            if value is None:
+                continue
+            items.append(
+                EvidenceItem(
+                    **common,
+                    metric=metric,
+                    observed_value=value,
+                    phase="phase_aware",
+                    metadata={**metadata_base, "evidence_bucket": "phase_aware"},
+                )
+            )
+
+    return items
+
 def normalize_evidence(
     *,
     root_cause_correlation: Optional[Dict[str, Any]] = None,
     traffic_intent_rca: Optional[Dict[str, Any]] = None,
     fabric_evidence: Optional[Dict[str, Any]] = None,
+    queue_cos_evidence: Optional[Dict[str, Any]] = None,
     artifact_paths: Optional[Dict[str, str]] = None,
 ) -> List[EvidenceItem]:
     """Normalize supported existing RCA artifacts into one evidence list."""
@@ -199,6 +298,14 @@ def normalize_evidence(
             normalize_fabric_evidence(
                 fabric_evidence,
                 supporting_artifact=paths.get("fabric_evidence"),
+            )
+        )
+
+    if queue_cos_evidence:
+        items.extend(
+            normalize_queue_cos_evidence(
+                queue_cos_evidence,
+                supporting_artifact=paths.get("queue_cos_evidence"),
             )
         )
 
