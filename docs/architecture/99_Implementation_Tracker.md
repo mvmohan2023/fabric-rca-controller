@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Engineering RCA Capability — evidence normalization and reusable RCA model
+Engineering RCA Capability — cross-domain evidence adapters
 
 Next Task
 
-Implement additive cross-domain RCA correlation and confidence assessment
+Normalize queue/CoS evidence into the reusable RCA model and validate same-entity correlation
 
 ---
 
@@ -266,9 +266,15 @@ SNMP Poll
 Engineering RCA
 
 - Current architecture source: docs/architecture/06_RCA_Framework.md
-- Start with evidence normalization and a reusable additive RCA model
+- Reusable additive EvidenceItem and RootCauseCandidate models implemented under controller/rca/
+- Existing root_cause_correlation artifact normalized successfully: 4 evidence items, 1 entity, 4 traffic metrics
+- Real artifact qualification: release_neg_007_leaf7_ecmp_degraded_100g
+- Entity correlation implemented without changing legacy RCA, engineering reasoning, or RCA UI schemas
+- Correlation qualification PASS: san-q5130-01|et-0/0/0 produced one domain_observation candidate
+- Confidence assessment correctly remained Low for one-domain/one-source evidence; metric count alone does not inflate confidence
+- fabric_evidence and traffic_intent_rca adapters are implemented but historical qualification artifacts were not present on the lab server
 - Preserve existing RCA artifacts and UI outputs; do not overwrite existing RCA
-- Next implementation step: inspect current RCA modules/artifacts and introduce the smallest reusable normalization layer
+- Next implementation step: normalize existing queue/CoS evidence and prove same-entity cross-domain correlation
 
 ---
 
