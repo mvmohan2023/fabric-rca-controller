@@ -148,7 +148,7 @@ Engineering RCA Capability — source adapter qualification using saved campaign
 
 Next Task
 
-Inspect the saved baseline intent summary shape and existing CoS needs-manual-review rows; source loading and baseline-return interpretation are verified
+Verify raw phase metric coverage for the saved CoS review queues and inspect intent corridor/endpoints before accepting zero deltas or empty path matches
 
 ---
 
@@ -540,3 +540,47 @@ keys, signal keys and matched-hotspot count, plus the saved CoS summary and
 needs-manual-review hotspot rows. Use saved artifacts; no new campaign needed.
 Normal runner integration and source preservation are closed checkpoints;
 full RCA milestone remains open for interpretation/coverage gaps and UI review.
+
+## 2026-10-02 Lab Evidence — Intent and CoS Review Assessment
+
+Evidence: user attachment `Pasted text(20261002-221307).txt` containing lab
+inspection of saved baseline `rca_sidecar_baseline_20261002_202431`.
+All 14 JSON hotspot rows were parsed and checked against classifier code.
+
+Intent:
+- status ok, error None, matched_hotspots 0, rca_summary null.
+- Zero normalized intent evidence is consistent with the adapter contract:
+  it normalizes a selected rca_summary, not invented path observations.
+- Empty result does not distinguish healthy/no matching congestion from empty
+  corridor or node/interface mismatch. Check src_leaf/dst_leaf/corridor before
+  promoting the adapter to meaningful nonempty real-artifact qualification.
+
+CoS:
+- 15 interfaces collected, 0 failed, phase_aware; 14 needs-manual-review.
+- 13 rows: spine2 q7, network_control, no_loss false, scheduler sc7,
+  transmit/buffer allocation 1% each, ECN disabled. Historical tail counters
+  range 4..11 packets; all carry historical_counter_only and score 1.
+  These are cumulative row observations, not event-drop counts.
+- One row: spine2|et-0/0/20:0|q2, rdma_storage, no_loss true, ECN enabled,
+  scheduler sc2, transmit/buffer allocation 40% each. Occupancy signal 3%,
+  tail/RED/queue-ECN counters 0; queued == transmitted == 22,622,152,421.
+  pause-induced-congestion remains a suspicion: interface PFC activity
+  128,618,451 is not a queue-priority-specific event delta or proof of RoCE
+  service impact. Interface out-ECN=5 is not the queue ECN counter.
+- All 14 rows have reported no_event_delta, baseline_or_historical_only,
+  zero rise/linger/drop deltas; cleared linger labels are not independent
+  evidence of recovery. Retain original manual-review classifications.
+- Classifier implementation intentionally falls back to needs-manual-review
+  when no specific policy branch applies; flags/scoring explain the output.
+
+Qualification limit found in code: _extract_qmon_queue_counters initializes
+missing metrics to zero, while delta-aware scoring uses zero defaults.
+The pasted phase-derived zeros alone cannot establish raw measurement
+completeness or no new loss. This is a coverage/interpretation gap, not yet a
+proven device defect or justification to rewrite legacy output.
+
+Exact next action: inspect raw PRE/RUNNING/POST record coverage for the reported
+spine2 interfaces/queues (first q7 and q2 on et-0/0/20:0), plus final-report
+src_leaf/dst_leaf/corridor. Determine whether phases contain actual tail/ECN
+measurements and consistent entity names before claiming historical-only or
+no-path-congestion closure. Use existing artifacts; no new campaign required.
