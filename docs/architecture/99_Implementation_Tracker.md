@@ -148,7 +148,7 @@ Engineering RCA Capability — real-campaign qualification of relevance and addi
 
 Next Task
 
-Inspect the three relevant observations in the qualified leaf7 campaign, verify source hashes across sidecar regeneration, then run normal-runner regression
+Run a new normal_baseline_no_churn campaign through fault_injection_runner; verify automatic sidecar creation and legacy validation/UI behavior
 
 ---
 
@@ -407,3 +407,35 @@ Exact next action:
 Recovery-zero behavior remains offline-qualified only because this real
 campaign contained no phase-supported recovery zeros. Fabric-evidence and
 traffic-intent adapter real-artifact qualification remains pending.
+
+## 2026-10-02 Lab Evidence — Source Preservation and Relevant Metrics
+
+User-provided lab output verifies the three target observations:
+
+| Entity | Metric | Value | Phase | Existing classification |
+|---|---|---:|---|---|
+| san-q5130-01\|et-0/0/0 | max_latency_ns | 1,434,220 ns | unspecified | receiver_hotspot |
+| leaf6\|et-0/0/0\|q2 | ecn_marked_pkts | 5,036 | signals | queue-pressure-with-ecn |
+| leaf6\|et-0/0/0\|q3 | ecn_marked_pkts | 284 | signals | queue-pressure-with-ecn |
+
+Both queues contribute relevant evidence. Latency equals 1.43422 ms. These are
+retained source observations, not measured event deltas or a causal chain.
+No latency baseline/SLO, ECN denominator, temporal alignment, CNP response or
+packet-loss result was supplied by this inspection; do not infer defect,
+recovery, or RoCE impact from the three values alone.
+
+The lab check hashed the case summary and every loaded source before and after
+sidecar regeneration and reported `SOURCE PRESERVATION: PASS`.
+
+Closed: real-campaign relevance inspection, canonical queue/traffic correlation,
+and lab byte-preservation check for loaded sources.
+Pending: automatic sidecar generation through the normal runner; legacy
+validation/verdict and phase-aware UI regression; missing adapter artifacts;
+real recovery-zero qualification (this campaign had no such observations).
+
+Exact next action: execute a new `normal_baseline_no_churn` single-scenario run
+with a unique run ID and the existing campaign's src/dst/intent/nodes/profile.
+Use normal phase windows and inspect the sidecar plus legacy validation/UI.
+No new fault is required to check the integration point. Do not overwrite the
+qualified historical campaign or promote another milestone before recording
+the regression evidence.
