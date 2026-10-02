@@ -85,6 +85,18 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
         if item.source in pointers:
             item.metadata["artifact_json_pointer"] = pointers[item.source]
     decisions = assess_relevance(evidence)
+    for name, entry in availability.items():
+        source = "rca_ui_evidence_index" if name == "queue_cos_evidence" else name
+        source_decisions = [
+            decision for item, decision in zip(evidence, decisions)
+            if item.source == source
+        ]
+        entry["normalized_evidence_count"] = len(source_decisions)
+        entry["relevant_evidence_count"] = sum(d["relevant"] for d in source_decisions)
+        if entry["status"] == "loaded":
+            entry["observation_status"] = (
+                "observations_normalized" if source_decisions else "no_normalized_observations"
+            )
     candidates = correlate_hierarchical_by_entity(evidence, inventory=inventory)
     return {
         "schema_version": "1.0",
@@ -106,6 +118,7 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
             "Correlation does not establish event causality or a device-health verdict.",
             "Confidence describes relevant evidence diversity and traceability.",
             "Defaultable zeros require matching phase evidence to support recovery.",
+            "A zero post delta supports return to the reported baseline, not zero absolute value or fault recovery.",
             "Missing or invalid sources remain explicit; they are not healthy observations.",
         ],
     }

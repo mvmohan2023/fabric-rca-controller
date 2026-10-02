@@ -148,7 +148,7 @@ Engineering RCA Capability — source adapter qualification using saved campaign
 
 Next Task
 
-Inspect embedded-intent normalized observations and the single phase-supported zero with its running delta in the saved baseline sidecar; then review existing CoS manual-review evidence
+Inspect the saved baseline intent summary shape and existing CoS needs-manual-review rows; source loading and baseline-return interpretation are verified
 
 ---
 
@@ -507,3 +507,36 @@ and the one phase_supported_recovery item with all matching delta_running rows
 return to baseline; this is a saved-evidence inspection, not a new campaign.
 Then inspect the existing CoS needs_manual_review observations. Browser rendering
 remains unverified because the live runner reported UI server unreachable.
+
+## 2026-10-02 Lab Evidence — Baseline-Return Interpretation Verified
+
+Saved baseline source counts supplied by user: root_cause_correlation 4,
+rca_ui_evidence_index 4,580; traffic_intent_rca normalized observations 0.
+Intent loading is verified; nonempty adapter normalization remains unqualified.
+Inspect the intent summary/status/matched-hotspot shape before interpreting
+zero output as a bug, lack of evidence, or a healthy path.
+
+The sole phase_supported_recovery observation is:
+
+- Entity: spine2|et-0/0/33|q3.
+- Metric: peak-buffer-occupancy-percent.
+- delta_running: +3.0; delta_post: 0; same source, artifact, entity and metric.
+- Classification: queue-pressure; event_delta_classification: no_event_delta.
+- Interpretation: return to the reported baseline difference. Not zero absolute
+  occupancy, proven fault recovery, or proof of taildrop/ECN recovery. The
+  defaultable cleared linger fields/zero series do not establish that claim.
+- Real-artifact phase-matching policy is verified; raw measurement completeness
+  and causal interpretation remain distinct from matching stored deltas.
+
+Additive report diagnostics now expose normalized_evidence_count,
+relevant_evidence_count and observation_status per source. A loaded empty source
+is explicitly no_normalized_observations; status loaded is preserved.
+Sidecar limitations explicitly distinguish zero post delta from zero absolute
+value or fault recovery. Offline tests: 13/13 PASS, including loaded-empty-intent
+semantics; diff check PASS. No existing CLI, legacy RCA or UI changes.
+
+Exact next action: inspect rca_final_report.json's intent_rca status, summary
+keys, signal keys and matched-hotspot count, plus the saved CoS summary and
+needs-manual-review hotspot rows. Use saved artifacts; no new campaign needed.
+Normal runner integration and source preservation are closed checkpoints;
+full RCA milestone remains open for interpretation/coverage gaps and UI review.

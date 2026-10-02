@@ -157,6 +157,22 @@ class EngineeringRCATest(unittest.TestCase):
             self.assertEqual(report["source_availability"]["traffic_intent_rca"]["status"], "invalid")
             self.assertEqual(report["evidence"], [])
 
+    def test_loaded_empty_intent_is_not_normalized_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "rca_case_summary.json"
+            summary.write_text('{}')
+            (root / "rca_final_report.json").write_text(json.dumps({
+                "intent_rca": {"status": "ok", "rca_summary": None, "matched_hotspots": []}
+            }))
+            report = build_engineering_rca_report(str(summary), inventory={})
+            source = report["source_availability"]["traffic_intent_rca"]
+            self.assertEqual(source["status"], "loaded")
+            self.assertEqual(source["normalized_evidence_count"], 0)
+            self.assertEqual(source["relevant_evidence_count"], 0)
+            self.assertEqual(source["observation_status"], "no_normalized_observations")
+            self.assertEqual(report["status"], "INSUFFICIENT_EVIDENCE")
+
 
 if __name__ == "__main__":
     unittest.main()
