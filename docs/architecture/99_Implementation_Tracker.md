@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Engineering RCA Capability — real-campaign qualification of relevance and additive sidecar
+Engineering RCA Capability — source adapter qualification using saved campaigns
 
 Next Task
 
-Run a new normal_baseline_no_churn campaign through fault_injection_runner; verify automatic sidecar creation and legacy validation/UI behavior
+Regenerate sidecar on the saved baseline campaign using producer-path discovery; inspect fabric/embedded-intent source availability and phase-aware UI JSON
 
 ---
 
@@ -439,3 +439,44 @@ Use normal phase windows and inspect the sidecar plus legacy validation/UI.
 No new fault is required to check the integration point. Do not overwrite the
 qualified historical campaign or promote another milestone before recording
 the regression evidence.
+
+## 2026-10-02 Lab Evidence — Normal Runner Integration PASS
+
+User provided the final lab runner output for:
+
+- RCA run: `rca_sidecar_baseline_20261002_202431`.
+- Stress run: `evt_normal_baseline_no_churn_20261002T202431Z`.
+- Scenario: `normal_baseline_no_churn`; one iteration, 112 resolved targets.
+- Validation and final status: PASS; runner exit: 0.
+- Sidecar exists: True; `[ENGINEERING-RCA] written` occurs after the final
+  ECMP-only UI refresh. Normal automatic sidecar integration is qualified.
+- Legacy case summary, UI and validation artifact paths were reported.
+- UI server reachable: NO; browser/UI rendering qualification remains open.
+- Baseline/running-decay/settle/post windows: 300/15/30/300 seconds.
+- Runtime: 3,730.27 seconds (62.17 minutes); do not shorten measurement windows
+  or launch another long campaign solely for source-path qualification.
+- Legacy primary cause: queue-pressure-with-taildrop; 225 hotspots; CoS has
+  14 needs_manual_review observations. PASS is not proof these observations
+  are harmless. No injected churn occurred, so do not assert event causality.
+
+Source-discovery inspection:
+
+- Existing fabric collector produces `traffic/fabric_evidence.json`.
+- Existing final report embeds traffic-intent analysis at `/intent_rca` in
+  `rca_final_report.json`, rather than requiring traffic_intent_rca.json.
+- Additive sidecar now checks those existing locations when no explicit source
+  path is configured and the primary conventional path is absent.
+- Explicit source paths retain priority, even when missing; failed embedded
+  intent analysis is marked invalid, never accepted as healthy evidence.
+- Embedded evidence records retain supporting artifact plus JSON pointer.
+- Offline checks: 12/12 PASS, including source-byte preservation for producer
+  locations, explicit-path priority and failed-intent rejection; compilation
+  and diff checks PASS. No legacy producer/schema/UI changes were made.
+
+Exact next action: regenerate `engineering_rca_report.json` for saved run
+`rca_sidecar_baseline_20261002_202431`, then inspect source availability,
+relevance counts, embedded intent status and phase-aware UI JSON/CoS review
+entries. This does not start telemetry, traffic, a fault, or a new campaign.
+Record results before advancing architecture milestones. Recovery-zero live
+qualification and browser rendering remain unverified; existing saved evidence
+should be checked before scheduling another campaign.

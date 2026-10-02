@@ -113,6 +113,50 @@ class EngineeringRCATest(unittest.TestCase):
                 write_engineering_rca_report(str(summary), inventory={})
             self.assertEqual(output.read_text(), '{}')
 
+    def test_existing_producer_locations_and_embedded_intent_are_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "traffic").mkdir()
+            summary = root / "rca_case_summary.json"
+            summary.write_text('{"run_id": "producer_paths"}')
+            final = root / "rca_final_report.json"
+            final.write_text(json.dumps({"intent_rca": {"status": "ok", "rca_summary": {
+                "node": "dut", "interface": "et-0/0/0", "signals": {"ecn": 5},
+                "intent_cause": "queue-pressure"}}}))
+            fabric = root / "traffic" / "fabric_evidence.json"
+            fabric.write_text(json.dumps({"interfaces": [{"device": "dut", "interface": "et-0/0/0",
+                "snapshot_records": [{"metric": "oper_status", "value": "UP"}]}]}))
+            inputs = {p: p.read_bytes() for p in [summary, final, fabric]}
+            path = Path(write_engineering_rca_report(str(summary), inventory={}))
+            report = json.loads(path.read_text())
+            self.assertEqual(report["source_availability"]["fabric_evidence"]["status"], "loaded")
+            self.assertEqual(report["source_availability"]["traffic_intent_rca"]["json_pointer"], "/intent_rca")
+            intent = next(e for e in report["evidence"] if e["source"] == "traffic_intent_rca")
+            self.assertEqual(intent["supporting_artifact"], str(final))
+            self.assertEqual(intent["metadata"]["artifact_json_pointer"], "/intent_rca")
+            self.assertEqual(inputs, {p: p.read_bytes() for p in inputs})
+
+    def test_explicit_missing_path_is_not_replaced_by_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "traffic").mkdir()
+            (root / "traffic" / "fabric_evidence.json").write_text('{}')
+            summary = root / "rca_case_summary.json"
+            summary.write_text('{"files": {"fabric_evidence": "missing.json"}}')
+            report = build_engineering_rca_report(str(summary), inventory={})
+            self.assertEqual(report["source_availability"]["fabric_evidence"]["status"], "missing")
+
+    def test_failed_embedded_intent_is_not_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "rca_case_summary.json"
+            summary.write_text('{}')
+            (root / "rca_final_report.json").write_text(json.dumps({"intent_rca": {"status": "failed",
+                "rca_summary": {"node": "dut", "signals": {"ecn": 5}}}}))
+            report = build_engineering_rca_report(str(summary), inventory={})
+            self.assertEqual(report["source_availability"]["traffic_intent_rca"]["status"], "invalid")
+            self.assertEqual(report["evidence"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,7 +31,7 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
     files = summary.get("files") or {}
     if not isinstance(files, dict):
         raise ValueError("Case summary files must be an object")
-    inputs, paths, availability = {}, {}, {}
+    inputs, paths, availability, pointers = {}, {}, {}, {}
     sources = {
         "root_cause_correlation": ("root_cause_correlation", "root_cause_correlation.json"),
         "traffic_intent_rca": ("traffic_intent_rca", "traffic_intent_rca.json"),
@@ -45,18 +45,45 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
             path = Path(explicit)
             if not path.is_absolute() and not path.exists():
                 path = case_path.parent / explicit
+        elif not path.is_file():
+            # Existing producers use these locations; do not rewrite them or
+            # silently override an explicitly configured source path.
+            fallback = None
+            if name in {"fabric_evidence", "root_cause_correlation"}:
+                fallback = case_path.parent / "traffic" / filename
+            elif name == "traffic_intent_rca":
+                fallback = case_path.parent / "rca_final_report.json"
+            if fallback is not None and fallback.is_file():
+                path = fallback
         path = path.resolve()
         paths[name] = str(path)
         if not path.is_file():
             availability[name] = {"status": "missing", "path": str(path)}
             continue
         try:
-            inputs[name] = _read_object(path)
+            data = _read_object(path)
+            pointer = None
+            if name == "traffic_intent_rca" and path.name == "rca_final_report.json":
+                data = data.get("intent_rca")
+                if not isinstance(data, dict):
+                    raise ValueError("Final report has no intent_rca object")
+                pointer = "/intent_rca"
+            if name == "traffic_intent_rca" and str(data.get("status", "")).lower() in {
+                "failed", "fail", "error", "skipped",
+            }:
+                raise ValueError("Traffic-intent analysis did not complete successfully")
+            inputs[name] = data
             availability[name] = {"status": "loaded", "path": str(path)}
+            if pointer:
+                pointers[name] = pointer
+                availability[name]["json_pointer"] = pointer
         except (OSError, ValueError) as exc:
             availability[name] = {"status": "invalid", "path": str(path), "error": str(exc)}
 
     evidence = normalize_evidence(**inputs, artifact_paths=paths)
+    for item in evidence:
+        if item.source in pointers:
+            item.metadata["artifact_json_pointer"] = pointers[item.source]
     decisions = assess_relevance(evidence)
     candidates = correlate_hierarchical_by_entity(evidence, inventory=inventory)
     return {
