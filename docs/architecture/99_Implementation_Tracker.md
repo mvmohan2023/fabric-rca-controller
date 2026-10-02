@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Engineering RCA Capability — cross-domain evidence adapters
+Engineering RCA Capability — evidence relevance and additive RCA artifact integration
 
 Next Task
 
-Normalize queue/CoS evidence into the reusable RCA model and validate same-entity correlation
+Prevent default/zero evidence volume from affecting RCA evidence quality, then inspect additive RCA artifact integration point
 
 ---
 
@@ -274,7 +274,18 @@ Engineering RCA
 - Confidence assessment correctly remained Low for one-domain/one-source evidence; metric count alone does not inflate confidence
 - fabric_evidence and traffic_intent_rca adapters are implemented but historical qualification artifacts were not present on the lab server
 - Preserve existing RCA artifacts and UI outputs; do not overwrite existing RCA
-- Next implementation step: normalize existing queue/CoS evidence and prove same-entity cross-domain correlation
+- Queue/CoS RCA UI evidence adapter implemented using existing evidence_index without changing legacy RCA/UI output
+- Real queue evidence inspection: 11,241 normalized items across 747 entities; 9,388 zero/default values and 1,853 nonzero values
+- Exact entity matching exposed node-identity and entity-granularity differences between traffic and queue evidence
+- Inventory-backed canonical node identity and interface-to-queue hierarchical correlation implemented additively
+- Real hierarchical qualification PASS on release_neg_007_leaf7_ecmp_degraded_100g
+- Qualified entity: san-q5130-01|et-0/0/0
+- Correlated child queues: leaf6|et-0/0/0|q2 and leaf6|et-0/0/0|q3
+- Qualified domains: queue + traffic; sources: rca_ui_evidence_index + root_cause_correlation
+- Result: cross_domain_observation with Medium evidence confidence
+- Original EvidenceItem entity values remain unchanged for source traceability
+- Zero values are not blindly discarded because zero can represent valid recovery evidence; evidence relevance remains the next refinement
+- Next implementation step: prevent default/zero evidence volume from degrading evidence quality, then identify the smallest additive RCA artifact integration point
 
 ---
 
