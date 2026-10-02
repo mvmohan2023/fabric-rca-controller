@@ -67,7 +67,7 @@ Engineering Capability
 
 🟨 RCA Framework
 
-⬜ Executive Release
+🟨 Executive Release (existing provisional evaluator)
 
 ⬜ Engineering AI
 
@@ -80,13 +80,13 @@ Scenario Families
 
 ✅ BGP
 
-⬜ Routing
+🟨 Routing (controlled-prefix actions implemented)
 
-⬜ Software
+🟨 Software (process restart + reboot primitive implemented)
 
-⬜ Telemetry
+🟨 Telemetry (code complete; qualification varies)
 
-⬜ Platform
+🟨 Platform (PRE/POST health monitoring implemented)
 
 ⬜ Scale
 
@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Engineering RCA Capability — evidence relevance and additive RCA artifact integration
+Engineering RCA Capability — real-campaign qualification of relevance and additive sidecar
 
 Next Task
 
-Prevent default/zero evidence volume from affecting RCA evidence quality, then inspect additive RCA artifact integration point
+On the lab server, generate the additive sidecar for release_neg_007_leaf7_ecmp_degraded_100g and verify relevant traffic/queue evidence, recovery treatment, and unchanged legacy artifacts
 
 ---
 
@@ -285,7 +285,7 @@ Engineering RCA
 - Result: cross_domain_observation with Medium evidence confidence
 - Original EvidenceItem entity values remain unchanged for source traceability
 - Zero values are not blindly discarded because zero can represent valid recovery evidence; evidence relevance remains the next refinement
-- Next implementation step: prevent default/zero evidence volume from degrading evidence quality, then identify the smallest additive RCA artifact integration point
+- This historical next step is closed by the 2026-10-02 offline checkpoint below; real-campaign qualification is next.
 
 ---
 
@@ -300,3 +300,70 @@ Read current sprint.
 Continue from Current Task.
 
 Do not change priorities.
+
+## 2026-10-02 Canonical Checkpoint
+
+Source branch: `feature/snmp-poll-validation`; starting commit: `40c6001`.
+The commit containing this section records the code and documentation checkpoint.
+No milestone priority changed. Current sprint remains Engineering RCA.
+
+Completed in this checkpoint:
+
+- Reconciled catalog, status, actual runner definitions and registered actions.
+  See `97_Scenario_Status.md` for implementation vs qualification distinctions.
+- Implemented non-destructive relevance in `controller/rca/relevance.py`.
+- Context/default zeros and descriptive confidence/recovery-ratio metadata do not
+  influence confidence diversity, completeness bonuses, or candidate category.
+- Zero post deltas can support return to baseline only with matching nonzero
+  running deltas on the same source/artifact/entity/metric.
+- Defaultable/padded phase-aware series cannot independently prove recovery.
+- All normalized observations remain in the new artifact, with ordered relevance
+  decisions. Context-only entities do not generate candidates.
+- Added `controller/rca/report.py`, producing only
+  `engineering_rca_report.json` alongside existing campaign artifacts.
+- Single-scenario runner invokes sidecar after final UI refresh. Sidecar failures
+  are reported separately without changing existing validation or exit status.
+- Missing/invalid sources are explicit; correlations are not causal diagnoses.
+- Existing CLI arguments, schemas, RCA reasoning and UI sections remain intact.
+
+Offline evidence:
+
+- `python -m unittest discover -s tests -v`: 9/9 PASS.
+- Includes 1,000-default-zero invariance, matching recovery evidence, invalid
+  values, padded series, canonical queue hierarchy and source immutability.
+- Sidecar integration test verifies existing input files remain byte-identical.
+- `python -m controller.rca.report --help`: PASS.
+- Python compilation of changed controller modules: PASS.
+- `git diff --check`: PASS.
+- Full runner help smoke was blocked by missing runtime dependency `requests`;
+  no full runner or live device qualification is claimed in this workspace.
+- Historical campaign artifacts are absent from this checkout.
+
+Exact next action (lab repo root, after applying this checkpoint):
+
+```bash
+python -m controller.rca.report \
+  --case-summary artifacts/campaigns/release_neg_007_leaf7_ecmp_degraded_100g/rca_case_summary.json \
+  --inventory controller/inventory.json
+```
+
+Inspect `engineering_rca_report.json` for canonical entity
+`san-q5130-01|et-0/0/0`, queue children q2/q3, relevant domain/source counts,
+context counts, confidence label and every recovery-relevance decision.
+Compare the legacy summary, UI, traffic and queue artifact hashes before/after.
+Record the real counts and verdict here; do not reuse the earlier 11,241/9,388
+counts as new qualification evidence. Then validate one normal runner campaign
+produces the sidecar automatically without changing its legacy verdict/output.
+
+Remaining current RCA work:
+
+1. Real-campaign relevance/sidecar qualification and normal-runner regression.
+2. Qualify fabric-evidence and traffic-intent adapters when those real artifacts
+   are available (previous tracker already identified this gap).
+3. Continue architecture 06 reasoning/conflict/missing-evidence improvements only
+   after qualification; correlation alone does not close the full RCA milestone.
+
+Other implementation/qualification gaps remain recorded in scenario status.
+Do not reprioritize ISSU, scale, history, or unrelated refactoring ahead of the
+canonical RCA action. A same-day full-project completion claim requires their
+actual scope and lab evidence; this checkpoint does not imply that claim.

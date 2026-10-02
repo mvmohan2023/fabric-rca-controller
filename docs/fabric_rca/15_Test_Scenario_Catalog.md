@@ -97,8 +97,8 @@ Engineering Coverage
 | Scenario | Status | Platform | Description |
 |----------|--------|----------|-------------|
 | Interface Hold / Restore | ✅ | All | Validate interface recovery |
-| Interface Bounce | Planned | All | Repeated interface bounce |
-| AE Member Flap | Planned | All | Validate AE resilience |
+| Interface Bounce | Implemented; tracker records family complete | All | Repeated interface bounce |
+| AE Member Flap | Excluded in current architecture/lab | All | Validate AE resilience |
 | Remote Interface Flap | Planned | All | Remote-side recovery |
 
 ---
@@ -107,9 +107,9 @@ Engineering Coverage
 
 | Scenario | Status | Platform | Description |
 |----------|--------|----------|-------------|
-| Route Churn | Planned | All | Inject large-scale routing updates |
-| BGP Restart | Planned | All | Restart BGP and validate convergence |
-| BFD Recovery | Planned | All | Validate BFD recovery |
+| Route Churn | Implemented (controlled single prefix); qualification not recorded here | All | Advertise/withdraw a controlled prefix repeatedly; large-scale churn remains planned |
+| BGP Clear / Neighbor Flap | Implemented; tracker records BGP family complete | All | Clear or deactivate/reactivate selected BGP peers; process restart is a separate action |
+| BFD Recovery | Implemented; live qualification not recorded here | All | Validate BFD recovery |
 
 ---
 
@@ -119,8 +119,8 @@ Engineering Coverage
 |----------|--------|----------|-------------|
 | ISSU Upgrade | Planned | EVO | Validate A→B upgrade |
 | ISSU Rollback | Planned | EVO | Validate B→A downgrade |
-| Daemon Restart | Planned | EVO | Restart routing/system daemons |
-| System Reboot | Planned | All | Validate reboot recovery |
+| Daemon Restart | Implemented; live qualification not recorded here | EVO | Restart routing/system daemons |
+| System Reboot | Action implemented; top-level scenario entry absent | All | Validate reboot recovery |
 | Rollback Image | Planned | EVO | Validate software rollback |
 
 ---
@@ -129,9 +129,9 @@ Engineering Coverage
 
 | Scenario | Status | Platform | Description |
 |----------|--------|----------|-------------|
-| gNMI Polling | Planned | All | Validate telemetry polling |
-| gNMI Subscribe | Planned | All | Validate streaming telemetry |
-| SNMP Polling | Planned | All | Validate SNMP counters |
+| gNMI Polling | Code/offline complete; live pending | All | Validate telemetry polling |
+| gNMI Subscribe | Code/offline complete; live pending | All | Validate streaming telemetry |
+| SNMP Polling | Single-node live complete; multi-node pending | All | Validate SNMP counters |
 | Alarm Monitoring | Planned | All | Validate system alarms |
 
 ---
@@ -189,14 +189,15 @@ Engineering Coverage
 
 # 7. Future Scenario Backlog
 
-High Priority
+High Priority (scenario gaps; not the current RCA sprint)
 
-- ISSU Validation
-- Route Churn
-- SNMP Polling
-- Daemon Restart
-- Interface Bounce
-- AE Member Flap
+- ISSU and image rollback: no registered action found
+- Large-scale route churn: controlled-prefix route churn already implemented
+- Reboot scenario registration and end-to-end qualification
+- Live qualification of gNMI and routing/process scenarios
+- Multi-node SNMP qualification
+
+Interface bounce, controlled-prefix route churn, daemon restart, and SNMP polling are not missing implementations. AE member flap is excluded by architecture 04 section 23 for the current lab.
 
 Medium Priority
 
@@ -265,3 +266,7 @@ It provides a centralized view of implementation status, engineering coverage, f
 | Version | Date | Author | Summary |
 |----------|------|--------|---------|
 | 1.0 | 2026-06-29 | Mohan Kumar M V | Initial Test Scenario Catalog |
+
+## 2026-10-02 Implementation Reconciliation
+
+The current implementation and qualification distinctions are recorded in [Scenario Status](../architecture/97_Scenario_Status.md). The canonical next action remains in [Implementation Tracker](../architecture/99_Implementation_Tracker.md). Capability matrix entries describe intended integration, not proof of live qualification. No production-ready status was inferred from a registered scenario alone.

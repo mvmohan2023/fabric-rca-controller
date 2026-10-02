@@ -5949,6 +5949,20 @@ def main() -> int:
         except Exception as exc:
             print(f"[FINAL-ECMP-UI-REFRESH-WARN] failed: {exc}")
 
+        # Additive evidence correlation sidecar after final phase-aware UI data.
+        # Its failure must not change legacy validation/CLI return semantics.
+        if os.path.exists(summary_path):
+            try:
+                from controller.rca.report import write_engineering_rca_report
+
+                engineering_rca_path = write_engineering_rca_report(
+                    summary_path,
+                    inventory=load_telemetry_inventory(DEFAULT_INVENTORY),
+                )
+                print(f"[ENGINEERING-RCA] written: {engineering_rca_path}")
+            except Exception as exc:
+                print(f"[ENGINEERING-RCA-WARN] failed: {exc}")
+
         if args.suite_id:
             summary_path = os.path.join(
                 "artifacts", "campaigns", args.rca_run_id, "rca_case_summary.json"

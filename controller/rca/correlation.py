@@ -10,6 +10,7 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional
 
 from .models import EvidenceItem, RootCauseCandidate
+from .relevance import assess_relevance
 
 
 def _confidence_for_group(items: List[EvidenceItem]) -> tuple[float, Dict[str, Any]]:
@@ -20,6 +21,9 @@ def _confidence_for_group(items: List[EvidenceItem]) -> tuple[float, Dict[str, A
     existing feature-specific analyzers.
     """
 
+    decisions = assess_relevance(items)
+    total_count = len(items)
+    items = [item for item, decision in zip(items, decisions) if decision["relevant"]]
     domains = {item.domain for item in items if item.domain}
     sources = {item.source for item in items if item.source}
     artifacts = {
@@ -31,7 +35,7 @@ def _confidence_for_group(items: List[EvidenceItem]) -> tuple[float, Dict[str, A
     traced = sum(1 for item in items if item.supporting_artifact)
 
     # A single-source observation starts deliberately below "Medium".
-    score = 0.30
+    score = 0.30 if items else 0.0
     score += min(max(len(domains) - 1, 0) * 0.15, 0.30)
     score += min(max(len(sources) - 1, 0) * 0.10, 0.20)
 
@@ -44,6 +48,9 @@ def _confidence_for_group(items: List[EvidenceItem]) -> tuple[float, Dict[str, A
 
     return score, {
         "evidence_count": len(items),
+        "total_evidence_count": total_count,
+        "context_evidence_count": total_count - len(items),
+        "relevance_policy": "phase_supported_v1",
         "domain_count": len(domains),
         "source_count": len(sources),
         "artifact_count": len(artifacts),
@@ -152,6 +159,8 @@ def correlate_hierarchical_by_entity(
     candidates: List[RootCauseCandidate] = []
     for entity, items in sorted(groups.items()):
         confidence, assessment = _confidence_for_group(items)
+        if not assessment["evidence_count"]:
+            continue
         domains = assessment["domains"]
         sources = assessment["sources"]
 
@@ -206,6 +215,8 @@ def correlate_by_entity(
     candidates: List[RootCauseCandidate] = []
     for entity, items in sorted(groups.items()):
         confidence, assessment = _confidence_for_group(items)
+        if not assessment["evidence_count"]:
+            continue
         domains = assessment["domains"]
         sources = assessment["sources"]
 

@@ -218,6 +218,8 @@ def normalize_queue_cos_evidence(
             "ecn_linger_trend": entry.get("ecn_linger_trend"),
             "recovery_ratio_tail": entry.get("recovery_ratio_tail"),
             "classification_confidence": entry.get("classification_confidence"),
+            "pre_tail_baseline_series": entry.get("pre_tail_baseline_series", []),
+            "post_tail_linger_series": entry.get("post_tail_linger_series", []),
         }
 
         for bucket_name, bucket in (
