@@ -148,7 +148,7 @@ Engineering RCA Capability — real-campaign qualification of relevance and addi
 
 Next Task
 
-On the lab server, generate the additive sidecar for release_neg_007_leaf7_ecmp_degraded_100g and verify relevant traffic/queue evidence, recovery treatment, and unchanged legacy artifacts
+Inspect the three relevant observations in the qualified leaf7 campaign, verify source hashes across sidecar regeneration, then run normal-runner regression
 
 ---
 
@@ -367,3 +367,43 @@ Other implementation/qualification gaps remain recorded in scenario status.
 Do not reprioritize ISSU, scale, history, or unrelated refactoring ahead of the
 canonical RCA action. A same-day full-project completion claim requires their
 actual scope and lab evidence; this checkpoint does not imply that claim.
+
+## 2026-10-02 Lab Evidence — RCA Relevance Checkpoint
+
+User executed commit `8fa39e7` on `san-hp-srv05` under `/root/fabric-controller`.
+Campaign: `release_neg_007_leaf7_ecmp_degraded_100g`.
+The generated sidecar and printed output establish real-artifact execution;
+this is not an independent live fault run or a full RCA milestone closure.
+
+- Status: `OBSERVATIONS`.
+- Total normalized evidence: 11,245; relevant: 1,839; context: 9,406.
+- Reasons: 7,912 zero_without_phase_support; 1,839 nonzero_observation;
+  1,494 descriptive_metadata. No phase_supported_recovery occurred in this run.
+- Loaded sources: `traffic/root_cause_correlation.json`, `rca_ui_report.json`.
+- Missing: `traffic_intent_rca.json`, `fabric_evidence.json` at resolved paths.
+  Their absence is an input-availability gap, not a healthy device observation.
+- Target `san-q5130-01|et-0/0/0`: exactly one cross_domain_observation.
+- Three relevant observations among 34 retained observations; 31 context items.
+- Domains queue + traffic; two sources and two artifacts; all relevant evidence
+  traceable and classified. Evidence confidence: 0.70, Medium.
+- Child entities: `leaf6|et-0/0/0|q2`, `leaf6|et-0/0/0|q3`.
+  Child listing includes context; the output does not yet prove both queues
+  independently contributed relevant evidence.
+
+Result: real-artifact correlation and relevance counts verified. Confidence is
+confidence in evidence correlation, not 70% confidence in a proven root cause.
+
+Exact next action:
+
+1. Print the target candidate's relevant metric/value/phase/source/artifact rows
+   using assess_relevance on its retained supporting evidence.
+2. Hash case summary and all loaded source files before and after regeneration;
+   confirm byte preservation. Offline source-preservation tests already pass,
+   but lab source hashes have not yet been provided.
+3. Complete a normal-runner regression that automatically produces the sidecar
+   while preserving legacy validation/verdict and phase-aware UI behavior.
+4. Record the above results here before progressing to the next milestone.
+
+Recovery-zero behavior remains offline-qualified only because this real
+campaign contained no phase-supported recovery zeros. Fabric-evidence and
+traffic-intent adapter real-artifact qualification remains pending.
