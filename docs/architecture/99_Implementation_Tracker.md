@@ -148,7 +148,7 @@ Engineering RCA Capability — source adapter qualification using saved campaign
 
 Next Task
 
-Regenerate sidecar on the saved baseline campaign using producer-path discovery; inspect fabric/embedded-intent source availability and phase-aware UI JSON
+Inspect embedded-intent normalized observations and the single phase-supported zero with its running delta in the saved baseline sidecar; then review existing CoS manual-review evidence
 
 ---
 
@@ -480,3 +480,30 @@ entries. This does not start telemetry, traffic, a fault, or a new campaign.
 Record results before advancing architecture milestones. Recovery-zero live
 qualification and browser rendering remain unverified; existing saved evidence
 should be checked before scheduling another campaign.
+
+## 2026-10-02 Lab Evidence — Saved Baseline Source Discovery
+
+User regenerated the saved baseline sidecar using `e35718e`.
+Run: `rca_sidecar_baseline_20261002_202431`; status OBSERVATIONS.
+
+- Evidence total 4,584; relevant 967; context 3,617.
+- Reasons: 3,167 zero_without_phase_support; 966 nonzero_observation;
+  450 descriptive_metadata; one phase_supported_recovery.
+- Loaded: traffic/root_cause_correlation.json, rca_final_report.json at
+  /intent_rca, and rca_ui_report.json.
+- Fabric source missing: neither default campaign path nor producer fallback
+  provided an existing file. Do not synthesize or recollect it merely to mark
+  source completeness; retain missing-source traceability.
+- Embedded-intent file resolution is real-artifact verified. Loading the object
+  is not yet proof of emitted meaningful evidence: inspect normalized source
+  counts and values before declaring adapter qualification complete.
+- The single zero has been accepted by the phase-matching policy. Its metric,
+  matching running delta, classification and measurement interpretation remain
+  uninspected. No fault was injected; do not claim fault recovery from this.
+
+Exact next action: print normalized counts/representative intent observations,
+and the one phase_supported_recovery item with all matching delta_running rows
+(same entity/source/artifact/metric). Assess whether the metric truly supports
+return to baseline; this is a saved-evidence inspection, not a new campaign.
+Then inspect the existing CoS needs_manual_review observations. Browser rendering
+remains unverified because the live runner reported UI server unreachable.
