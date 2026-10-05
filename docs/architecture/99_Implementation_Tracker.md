@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Engineering RCA Capability — additive engineering assessment; lab qualification deferred during outage
+Engineering RCA Capability — aligned conflict assessment implemented offline; lab qualification deferred during outage
 
 Next Task
 
-While server is down, continue offline RCA assessment checks; when restored, qualify engineering_assessment on saved campaigns and resume raw-phase/corridor/UI checks
+Next offline item: inspect producer measurement provenance before adding comparison context; when restored, qualify engineering_assessment on saved campaigns and resume raw-phase/corridor/UI checks
 
 ---
 
@@ -634,3 +634,41 @@ causal/conflict ranking requires measured aligned evidence;
 retain explicit limitations rather than fabricate conclusions. When lab returns,
 regenerate existing saved sidecars and inspect engineering_assessment before
 resuming the recorded raw-phase/corridor checks; no new campaign is required.
+
+
+## 2026-10-05 — aligned conflict assessment (offline checkpoint)
+
+Continued the documented architecture 06 reasoning/conflict work during the
+lab outage. Added `controller/rca/conflicts.py` and integrated its assessment
+inside the additive engineering_assessment sidecar section. No legacy verdict,
+candidate confidence, CLI, UI or source artifact is modified.
+
+Comparisons require the same entity, metric, phase, measurement window, kind,
+unit, population, counter epoch (where applicable), and tolerance. Only distinct
+sources are compared. Disagreements retain evidence indices, source artifacts,
+original values and comparison context. Matching values mean only agreement
+within those comparable pairs, not complete coverage or a healthy verdict.
+Missing provenance stays unassessed; differing phases are not conflicts.
+
+Optional metadata contract: `comparison_context` must contain `measured: true`,
+timezone-aware ISO `window_start` and `window_end` with start before end,
+`measurement_kind` (gauge/counter/delta/rate), nonempty `unit` and `population`.
+Counter/delta observations additionally require a nonempty `counter_epoch`.
+Optional `absolute_tolerance` defaults to zero and must be finite/nonnegative.
+Values must be finite numeric observations, excluding booleans. Explicitly
+measured zeros may be compared; legacy default zeros do not gain provenance.
+Fabric snapshot adapter preserves explicitly supplied comparison_context;
+existing producers are not assumed to provide this contract. No alias, unit
+conversion or queue aggregation is inferred.
+
+Validation: 26/26 offline tests PASS; Python compilation and diff check PASS.
+Nine new tests cover aligned disagreement, tolerance, incompatible scope,
+invalid provenance, counter epochs, timezone equivalence, measured zeros,
+same-source exclusion, immutability/confidence preservation and adapter pass-through.
+No live qualification or scenario completion is claimed.
+
+Exact next offline action: inspect producer raw measurement provenance and
+identify where trustworthy validity, window, unit, population and counter epoch
+can be carried additively; do not synthesize these from legacy aggregate/default
+fields. Saved baseline/negative sidecar qualification and all recorded lab
+raw-phase/corridor/UI checks remain deferred until the server is restored.

@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 from .models import EvidenceItem, RootCauseCandidate
 from .relevance import assess_relevance
+from .conflicts import assess_aligned_conflicts
 
 
 def build_engineering_assessment(
@@ -36,6 +37,7 @@ def build_engineering_assessment(
                          "supporting_artifact": entry.get("path"), "recommended_check": action})
 
     indices = {id(item): index for index, item in enumerate(evidence)}
+    conflicts = assess_aligned_conflicts(evidence)
     assessments = []
     for candidate in candidates:
         items = candidate.supporting_evidence
@@ -64,6 +66,13 @@ def build_engineering_assessment(
             if "latency" in str(item.metric).lower():
                 checks.append("Compare latency with the matching flow baseline/SLO and RoCE loss, ECN/CNP and retransmission evidence.")
             facts.append(fact)
+        candidate_indices = {indices.get(id(item)) for item in items}
+        candidate_conflicts = [conflict for conflict in conflicts["disagreements"]
+                               if set(conflict["evidence_indices"]) <= candidate_indices]
+        compared = sum(set(pair) <= candidate_indices for pair in conflicts["compared_evidence_pairs"])
+        conflict_status = ("disagreements_observed" if candidate_conflicts else
+                           "no_disagreement_in_comparable_pairs" if compared else
+                           "not_assessed_without_aligned_measurement_windows")
         assessments.append({
             "entity": candidate.entity,
             "conclusion": "Relevant observations are correlated; expectedness and event causality remain unverified.",
@@ -72,7 +81,8 @@ def build_engineering_assessment(
             "confidence_label": candidate.metadata.get("confidence_label"),
             "interpretation_limits": list(dict.fromkeys(limits)),
             "recommended_checks": list(dict.fromkeys(checks)),
-            "conflict_assessment": "not_assessed_without_aligned_measurement_windows",
+            "conflict_assessment": conflict_status,
+            "conflicting_observations": candidate_conflicts,
         })
     return {
         "policy_version": "evidence_assessment_v1",
@@ -80,6 +90,7 @@ def build_engineering_assessment(
         "source_coverage": "gaps_present" if gaps else "normalized_sources_available",
         "source_gaps": gaps,
         "candidate_assessments": assessments,
+        "aligned_conflict_assessment": conflicts,
         "limitations": ["Source coverage describes the supported adapters, not mandatory scenario coverage or a validation verdict.",
                         "Missing sources, context-only evidence and defaultable zeros are not proof of healthy behavior.",
                         "No conflict is asserted merely because observations differ across phases or sources."],
