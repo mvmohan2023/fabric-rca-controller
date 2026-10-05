@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Engineering RCA Capability — source adapter qualification using saved campaigns
+Engineering RCA Capability — additive engineering assessment; lab qualification deferred during outage
 
 Next Task
 
-Verify raw phase metric coverage for the saved CoS review queues and inspect intent corridor/endpoints before accepting zero deltas or empty path matches
+While server is down, continue offline RCA assessment checks; when restored, qualify engineering_assessment on saved campaigns and resume raw-phase/corridor/UI checks
 
 ---
 
@@ -584,3 +584,53 @@ spine2 interfaces/queues (first q7 and q2 on et-0/0/20:0), plus final-report
 src_leaf/dst_leaf/corridor. Determine whether phases contain actual tail/ECN
 measurements and consistent entity names before claiming historical-only or
 no-path-congestion closure. Use existing artifacts; no new campaign required.
+
+## 2026-10-05 Server Outage — Offline Engineering Assessment Checkpoint
+
+User explicitly directed continuation to the next pending implementation item
+while lab server is down. This authorizes proceeding with the already-listed
+RCA reasoning/missing-evidence work without closing the pending lab gates.
+Architecture 06 (confidence/engineering reasoning/traceability) remains source
+of truth; no scenario or architecture reprioritization is implied.
+
+Implemented:
+- New `controller/rca/assessment.py` deterministic engineering assessment.
+- Additive `engineering_assessment` section in the separate sidecar only.
+- Source gaps distinguish missing/invalid artifacts, loaded empty observations,
+  and context-only evidence; coverage is not a scenario acceptance verdict.
+- Per-candidate relevant facts link to normalized evidence indices and source
+  artifacts, retaining original queue entity identities and phase/value data.
+- Interpretation limits distinguish correlated observations, expectedness,
+  event causality and evidence confidence.
+- Baseline-return zeros explicitly do not prove zero absolute values or fault
+  recovery. Signal/cumulative counters do not prove new event increments.
+- Recommended checks cover raw metric/phase completeness, temporal alignment,
+  independent-domain observations, latency baseline/SLO and RoCE evidence,
+  and PFC direction/priority/queue-specific traffic impact.
+- Conflict assessment is explicitly unassessed without aligned windows;
+  differing values across phases are not asserted as contradictions.
+- Existing candidate fields/confidence, CLI, legacy validation/RCA/reasoning,
+  UI and source artifacts remain unchanged.
+
+Validation: 17/17 offline tests PASS, Python compilation PASS, diff check PASS.
+Report-level comparison against the previous committed reporter on a fixture
+with a phase-supported baseline return and empty intent: all pre-existing
+sidecar fields identical after excluding only engineering_assessment; PASS.
+New tests cover missing/empty/context-only sources, traceable baseline return,
+confidence/input immutability, context exclusion and phase-difference limits.
+No live qualification is claimed. Full RCA milestone remains open.
+
+Deferred lab checks remain pending (not failed or completed):
+- Raw PRE/RUNNING/POST coverage on saved spine2 queue review observations.
+- Intent endpoints/corridor and nonempty intent adapter evidence.
+- Real fabric-evidence adapter qualification where artifact exists.
+- Browser/UI qualification; prior run reported UI server unreachable.
+- Saved-campaign qualification of the new engineering_assessment section.
+
+Report-level offline integration and earlier-sidecar-field preservation checks
+are complete. Exact next action: qualify engineering_assessment on the saved
+baseline and negative campaigns once artifacts/server are available. Further
+causal/conflict ranking requires measured aligned evidence;
+retain explicit limitations rather than fabricate conclusions. When lab returns,
+regenerate existing saved sidecars and inspect engineering_assessment before
+resuming the recorded raw-phase/corridor checks; no new campaign is required.

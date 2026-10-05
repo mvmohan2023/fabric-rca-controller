@@ -16,6 +16,7 @@ from controller.utils import atomic_write_json
 from .correlation import correlate_hierarchical_by_entity, serialize_candidates
 from .evidence_normalizer import normalize_evidence, serialize_evidence
 from .relevance import assess_relevance
+from .assessment import build_engineering_assessment
 
 
 def _read_object(path: Path) -> Dict[str, Any]:
@@ -114,6 +115,7 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
         "evidence": serialize_evidence(evidence),
         "evidence_relevance": decisions,
         "candidates": serialize_candidates(candidates),
+        "engineering_assessment": build_engineering_assessment(evidence, candidates, availability),
         "limitations": [
             "Correlation does not establish event causality or a device-health verdict.",
             "Confidence describes relevant evidence diversity and traceability.",
