@@ -574,12 +574,22 @@ def normalize_generic_payload(payload: Dict[str, Any], node: str, sub_path: str)
 
 def normalize_telemetry_payload(payload: Dict[str, Any], node: str, sub_path: str) -> List[Dict[str, Any]]:
     if is_optics_path(sub_path):
-        return normalize_optics_payload(payload=payload, node=node, sub_path=sub_path)
+        records = normalize_optics_payload(payload=payload, node=node, sub_path=sub_path)
+    elif is_qmon_path(sub_path):
+        records = normalize_qmon_payload(payload=payload, node=node, sub_path=sub_path)
+    elif is_interface_state_path(sub_path):
+        records = normalize_interface_state_payload(payload=payload, node=node, sub_path=sub_path)
+    else:
+        records = normalize_generic_payload(payload=payload, node=node, sub_path=sub_path)
 
-    if is_qmon_path(sub_path):
-        return normalize_qmon_payload(payload=payload, node=node, sub_path=sub_path)
-
-    if is_interface_state_path(sub_path):
-        return normalize_interface_state_payload(payload=payload, node=node, sub_path=sub_path)
-
-    return normalize_generic_payload(payload=payload, node=node, sub_path=sub_path)
+    # Preserve supplied payload timestamps verbatim. Their units/clock semantics
+    # are not inferred, and a sample timestamp is not an interval or counter epoch.
+    timestamps = {key: payload[key] for key in ("timestamp", "time") if key in payload}
+    if timestamps:
+        from copy import deepcopy
+        for record in records:
+            record["measurement_provenance"] = {
+                "payload_timestamps": deepcopy(timestamps),
+                "timestamp_semantics": "unverified_source_fields",
+            }
+    return records

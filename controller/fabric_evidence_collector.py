@@ -1,4 +1,5 @@
 import argparse
+from copy import deepcopy
 import json
 import os
 import sys
@@ -106,13 +107,25 @@ def collect_snapshot_evidence(
                     category = categorize_metric(metric)
                     result[iface]["summary"][category] += 1
                     if len(result[iface]["records"]) < 50:
-                        result[iface]["records"].append({
+                        record = {
                             "node": node.get("node_name") or node.get("node"),
                             "entity": entity,
                             "metric": metric,
                             "value": rec.get("value"),
                             "category": category,
-                        })
+                        }
+                        # Retain supplied provenance; do not reconstruct windows,
+                        # units, populations or epochs from metric names/defaults.
+                        record["measurement_provenance"] = {
+                            key: deepcopy(rec[key]) for key in
+                            ("node", "path", "raw_value", "labels", "type",
+                             "source_prefix", "update_path", "measurement_provenance")
+                            if key in rec
+                        }
+                        for key in ("phase", "comparison_context"):
+                            if key in rec:
+                                record[key] = deepcopy(rec[key])
+                        result[iface]["records"].append(record)
 
     return result
 

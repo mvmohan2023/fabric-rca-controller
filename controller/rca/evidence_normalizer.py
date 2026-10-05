@@ -141,9 +141,12 @@ def normalize_fabric_evidence(
                     metric=record.get("metric"),
                     observed_value=record.get("value"),
                     classification=record.get("category"),
+                    phase=record.get("phase"),
                     supporting_artifact=supporting_artifact,
                     metadata={
                         "record_entity": record.get("entity"),
+                        **({"measurement_provenance": record["measurement_provenance"]}
+                           if isinstance(record.get("measurement_provenance"), dict) else {}),
                         **({"comparison_context": record["comparison_context"]}
                            if isinstance(record.get("comparison_context"), dict) else {}),
                     },

@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Engineering RCA Capability — aligned conflict assessment implemented offline; lab qualification deferred during outage
+Engineering RCA Capability — measurement provenance retention implemented offline; lab qualification deferred during outage
 
 Next Task
 
-Next offline item: inspect producer measurement provenance before adding comparison context; when restored, qualify engineering_assessment on saved campaigns and resume raw-phase/corridor/UI checks
+Qualify saved-campaign engineering assessment and raw measurement provenance when server/artifacts return; counter epoch/window semantics remain unverified
 
 ---
 
@@ -672,3 +672,41 @@ identify where trustworthy validity, window, unit, population and counter epoch
 can be carried additively; do not synthesize these from legacy aggregate/default
 fields. Saved baseline/negative sidecar qualification and all recorded lab
 raw-phase/corridor/UI checks remain deferred until the server is restored.
+
+
+## 2026-10-05 — collector measurement provenance retention
+
+Inspected telemetry normalizers, telemetry monitor, fabric evidence collector
+and engineering evidence adapter. The monitor retains raw payloads, but the
+normalizer previously discarded payload timestamps. The fabric collector then
+retained only node/entity/metric/value/category, dropping source metric scope.
+Neither path establishes verified units, counter reset epoch, measurement
+window or population for the aligned comparison contract. Metric type labels
+are classifier output, not independent proof of measurement semantics.
+
+Implemented additive retention:
+- Telemetry payload `timestamp` and `time`, when present, are retained verbatim
+  as measurement_provenance with explicitly unverified timestamp semantics.
+  No timestamp units, validity, clock alignment, interval or epoch is inferred.
+- Fabric snapshot records retain supplied raw_value, node/path, labels/type,
+  source_prefix/update_path and existing measurement_provenance.
+- Explicit per-record phase and comparison_context survive collection and the
+  engineering adapter. Missing phase/context remain missing; no contract is
+  synthesized. Original record entity is retained in adapter metadata.
+- Existing collected values, classifications, summaries and text output remain
+  unchanged. No CLI options, candidate confidence or legacy verdict changed.
+
+Validation: 30/30 offline tests PASS; touched modules compile; scoped diff
+check PASS. Tests verify timestamp/legacy field preservation, end-to-end raw
+scope/phase/context retention, input immutability and refusal to promote a
+sample timestamp or incomplete context into a comparable measurement.
+An unrelated existing local stress_orchestrator.py edit is excluded.
+
+This completes the documented producer inspection and provenance retention
+checkpoint, not the full RCA milestone. Exact next action: when saved artifacts
+are available, inspect raw payload timestamp units/clock and phase metric
+coverage, establish real counter-reset epochs/windows/populations and qualify
+baseline/negative engineering sidecars. Independent-source conflict comparison
+remains unassessed for legacy observations without that provenance. Existing
+intent corridor/fabric adapter/UI lab gates remain pending. No lab scenario
+is newly completed by these offline tests.
