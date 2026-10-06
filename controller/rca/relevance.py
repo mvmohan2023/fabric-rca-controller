@@ -1,7 +1,8 @@
 """Evidence relevance without deleting or rewriting source observations.
 
-Default zeros cannot establish an engineering observation. Measured post-event
-zeros can establish recovery when a matching running-phase change exists.
+Default zeros cannot establish an engineering observation. A zero post delta
+with a matching running-phase change is retained for interpretation, not proof
+of recovery.
 Relevance is not a health threshold or a causal diagnosis.
 """
 
@@ -32,7 +33,8 @@ def _number(value: Any) -> float | None:
 def assess_relevance(items: Iterable[EvidenceItem]) -> List[Dict[str, Any]]:
     """Return one ordered decision per item, retaining exact-entity boundaries.
 
-    A post delta of zero means return to baseline, not zero absolute traffic.
+    The congestion producer computes post delta as POST minus RUNNING. Zero
+    therefore means no reported change from RUNNING, not return to PRE.
     Phase-aware UI fields and series can be padded with zeros. They cannot
     prove recovery without independent measurement provenance. Classification
     and score alone are insufficient.
@@ -62,6 +64,8 @@ def assess_relevance(items: Iterable[EvidenceItem]) -> List[Dict[str, Any]]:
                 item.phase == "delta_post" and (*key, item.metric) in running
             )
             relevant = recovered_delta
+            # Retain the historical reason token for JSON/confidence compatibility.
+            # It denotes phase-supported relevance, not an actual recovery verdict.
             reason = "phase_supported_recovery" if relevant else "zero_without_phase_support"
         elif value is not None:
             relevant, reason = True, "nonzero_observation"

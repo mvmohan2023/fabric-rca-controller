@@ -58,7 +58,7 @@ def build_engineering_assessment(
                     "supporting_artifact": item.supporting_artifact,
                     "interpretation": "Reported source observation; expectedness has not been assessed."}
             if decision["reason"] == "phase_supported_recovery":
-                fact["interpretation"] = "Zero post delta with a matching nonzero running delta: return to the reported baseline difference, not zero absolute value or proven fault recovery."
+                fact["interpretation"] = "Zero post delta with a matching nonzero running delta: under the congestion delta producer contract (POST minus RUNNING), this means no reported change from RUNNING, not zero absolute value or proven fault recovery. Verify raw phase coverage and producer semantics; a return to PRE is not established."
             if item.phase == "signals":
                 limits.append("Unphased signal/cumulative counters cannot establish new event increments.")
             if "pfc" in str(item.metric).lower() or "pause" in str(item.metric).lower():

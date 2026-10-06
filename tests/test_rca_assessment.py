@@ -23,7 +23,7 @@ class AssessmentTest(unittest.TestCase):
         intent = next(g for g in result["source_gaps"] if g["source"] == "traffic_intent_rca")
         self.assertIn("corridor", intent["recommended_check"])
 
-    def test_baseline_return_is_not_fault_recovery_and_facts_are_traceable(self):
+    def test_zero_post_delta_is_not_fault_recovery_and_facts_are_traceable(self):
         items = [self.item(metric="occupancy", observed_value=3, phase="delta_running"),
                  self.item(metric="occupancy", observed_value=0, phase="delta_post")]
         candidates = correlate_by_entity(items)
@@ -31,6 +31,24 @@ class AssessmentTest(unittest.TestCase):
         facts = result["candidate_assessments"][0]["facts"]
         self.assertEqual([f["evidence_index"] for f in facts], [0, 1])
         self.assertIn("not zero absolute value or proven fault recovery", facts[1]["interpretation"])
+
+    def test_saved_baseline_zero_post_delta_means_unchanged_running(self):
+        from controller.congestion_delta_analyzer import compute_delta
+        key = ("spine2", "et-0/0/33", 3)
+        metric = "peak-buffer-occupancy-percent"
+        row = compute_delta({key: {metric: 0}}, {key: {metric: 3}},
+                            {key: {metric: 3}})[0]
+        self.assertEqual(row["delta_running"][metric], 3)
+        self.assertEqual(row["delta_post"][metric], 0)
+        items = [self.item(metric=metric, observed_value=row[phase][metric], phase=phase)
+                 for phase in ("delta_running", "delta_post")]
+        candidates = correlate_by_entity(items)
+        before = copy.deepcopy([c.to_dict() for c in candidates])
+        result = build_engineering_assessment(items, candidates, {})
+        fact = result["candidate_assessments"][0]["facts"][1]
+        self.assertIn("no reported change from RUNNING", fact["interpretation"])
+        self.assertIn("return to PRE is not established", fact["interpretation"])
+        self.assertEqual(before, [c.to_dict() for c in candidates])
 
     def test_context_is_excluded_and_input_confidence_is_unchanged(self):
         items = [self.item(metric="pfc_activity", observed_value=10, phase="signals"),

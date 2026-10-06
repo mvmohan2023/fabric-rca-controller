@@ -710,3 +710,34 @@ baseline/negative engineering sidecars. Independent-source conflict comparison
 remains unassessed for legacy observations without that provenance. Existing
 intent corridor/fabric adapter/UI lab gates remain pending. No lab scenario
 is newly completed by these offline tests.
+
+
+## 2026-10-05 — saved baseline delta semantics qualification and correction
+
+Server restored; user regenerated saved baseline/negative engineering sidecars.
+Negative source preservation PASS; evidence remains 11245/1839/9406
+(total/relevant/context). Both campaigns have loaded intent with zero normalized
+observations, missing fabric evidence, and no comparable aligned conflict pairs.
+This is explicit insufficient comparison provenance, not evidence agreement.
+
+User supplied raw spine2 et-0/0/33 queue3 peak-buffer-occupancy-percent:
+initial PRE=0, RUNNING=3, POST=3; PRE samples=4,0,3; recovery samples=2,2
+and phase POST=3. Traced congestion_delta_analyzer.compute_delta and UI evidence
+index: delta_running=RUNNING-PRE; delta_post=POST-RUNNING. Therefore 3/0
+running/post deltas do not establish return to PRE. Earlier tracker entries
+claiming baseline return for this observation are superseded by this finding.
+Peak metric reset/window semantics remain unverified; persistence alone does
+not establish ongoing congestion or failed recovery.
+
+Corrected engineering fact interpretation and report limitation text. Kept the
+historical phase_supported_recovery relevance token for existing JSON and
+confidence compatibility; it is a relevance label, not a recovery verdict.
+Source values, legacy CLI/UI/RCA outputs and candidate confidence unchanged.
+Validation: 31/31 tests PASS including regression through real delta producer
+for PRE=0/RUNNING=3/POST=3 with immutable candidate serialization. Compilation
+and scoped diff check PASS. No new campaign required for this correction.
+
+Exact next action: pull correction and regenerate saved baseline sidecar,
+printing only the zero-post fact interpretation. Then inspect intent endpoints/
+corridor and raw source timestamps/counter epoch coverage; fabric adapter and
+browser/UI qualification remain pending. Full RCA milestone remains open.

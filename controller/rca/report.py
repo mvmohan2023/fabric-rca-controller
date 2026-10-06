@@ -120,7 +120,7 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
             "Correlation does not establish event causality or a device-health verdict.",
             "Confidence describes relevant evidence diversity and traceability.",
             "Defaultable zeros require matching phase evidence to support recovery.",
-            "A zero post delta supports return to the reported baseline, not zero absolute value or fault recovery.",
+            "For congestion deltas, delta_post is POST minus RUNNING: zero means no reported change from RUNNING, not return to PRE, zero absolute value or fault recovery.",
             "Missing or invalid sources remain explicit; they are not healthy observations.",
         ],
     }
