@@ -774,3 +774,35 @@ engineering_assessment.intent_path_coverage. Verified traffic IP-to-port mapping
 is required before IP corridor analysis can be qualified. Continue raw timestamp/
 epoch and missing fabric artifact coverage inspection, then browser/UI checks.
 This completes the additive intent diagnostic, not full RCA qualification.
+
+
+## 2026-10-06 — additive UI engineering qualification
+
+User confirmed existing fabric-rca-ui.service active/enabled on port8080.
+Root and saved baseline API return HTTP200. Uploaded Fabric RCA UI.pdf
+(19 pages) confirms baseline browser rendering. Technical qualification remains
+open: noop baseline receives degraded-hold recovery narrative; ECMP reports
+insufficient_data alongside convergence claim; historical/no_event_delta q7
+receives cleared wording; interface-wide PFC appears as queue evidence; high
+causality/delayed RoCE recovery exceed verified phase/path evidence.
+
+Added separate Engineering Qualification section above existing dashboard,
+loaded from read-only /api/rca/cases/{run_id}/engineering endpoint. Displays
+sidecar intent/source gaps, aligned comparison status and pair count,
+limitations and zero-post facts. Explicit caution covers noop recovery,
+insufficient ECMP, PFC scope and cumulative traffic/error causal limits.
+Existing report routes, JSON artifacts, verdicts, graphs and UI sections are
+preserved. Missing/invalid sidecar shows unavailable coverage without blocking
+legacy report loading. Run-switch guards prevent stale qualification display.
+
+Validation: 37/37 Python tests PASS; JS syntax and Python compilation PASS;
+scoped diff check PASS. Endpoint-body tests cover read-only loading, missing,
+invalid and traversal cases. FastAPI is not installed in this workspace;
+HTTP integration and browser qualification of the new section remain lab gates.
+Existing local stress_orchestrator.py edit excluded.
+
+Exact next action: pull, restart existing fabric-rca-ui.service, check saved
+baseline /engineering API, hard-refresh UI and confirm Engineering Qualification
+renders above dashboard. Do not rebuild/overwrite legacy UI artifacts.
+Verified IP-to-port mapping, counter epochs/aligned windows, fabric adapter and
+section-by-section technical review remain open; full RCA milestone not closed.

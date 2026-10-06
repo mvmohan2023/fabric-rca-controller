@@ -2911,12 +2911,49 @@ async function loadCases() {
   await loadCase(state.currentRunId);
 }
 
+async function loadEngineeringQualification(runId) {
+  const block = document.getElementById("engineeringQualificationBlock");
+  if (!block) return;
+  block.textContent = "Loading engineering qualification…";
+  try {
+    const data = await fetchJson(`/api/rca/cases/${encodeURIComponent(runId)}/engineering`);
+    if (state.currentRunId !== runId) return;
+    const assessment = data.engineering_assessment || {};
+    const intent = assessment.intent_path_coverage || {};
+    const conflicts = assessment.aligned_conflict_assessment || {};
+    const gaps = assessment.source_gaps || [];
+    const limits = data.limitations || [];
+    const list = values => `<ul>${values.map(value => `<li>${escapeHtml(value)}</li>`).join("")}</ul>`;
+    const facts = (assessment.candidate_assessments || []).flatMap(candidate =>
+      (candidate.facts || []).filter(fact => fact.phase === "delta_post" && fact.observed_value === 0)
+        .map(fact => `${fact.entity}: ${fact.metric} — ${fact.interpretation}`));
+    block.innerHTML = `
+      <p>Evidence qualification: expectedness and event causality remain unverified. Existing verdicts require review against these limits.</p>
+      <p>Intent path: <strong>${escapeHtml(intent.status || "not assessed")}</strong></p>
+      ${list(intent.reasons || [])}
+      <p>Conflict comparison: ${escapeHtml(conflicts.status || "not assessed")}.
+      Comparable pairs: ${escapeHtml(conflicts.comparable_pair_count ?? "unknown")}.</p>
+      <h4>Source coverage gaps</h4>
+      ${list(gaps.map(gap => `${gap.source}: ${gap.reason}. ${gap.recommended_check}`))}
+      <h4>Interpretation limits</h4>${list(limits)}
+      <p>A noop execution does not establish fault recovery. Insufficient ECMP data does not establish convergence.
+      Interface-wide PFC activity does not establish queue-specific RoCE impairment.
+      Cumulative traffic errors alone do not establish event causality or delayed recovery.</p>
+      ${facts.length ? `<h4>Zero post-delta observations</h4>${list(facts)}` : ""}
+    `;
+  } catch (error) {
+    if (state.currentRunId !== runId) return;
+    block.textContent = "Engineering qualification is unavailable. This is a coverage gap, not a healthy verdict; existing report sections remain available.";
+  }
+}
+
 async function loadCase(runId) {
   state.currentRunId = runId;
   state.showAllCosHotspots = false;
 
   const report = await fetchJson(`/api/rca/cases/${encodeURIComponent(runId)}`);
   state.currentCase = report;
+  void loadEngineeringQualification(runId);
   
   renderStats(report);
   renderSummary(report);

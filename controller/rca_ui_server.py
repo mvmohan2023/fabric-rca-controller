@@ -134,3 +134,21 @@ def get_case(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Invalid JSON: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/rca/cases/{run_id}/engineering")
+def get_engineering_case(run_id: str) -> dict[str, Any]:
+    """Read the optional sidecar without rebuilding or changing legacy reports."""
+    case_dir = (ARTIFACTS_DIR / run_id).resolve()
+    if case_dir.parent != ARTIFACTS_DIR.resolve():
+        raise HTTPException(status_code=404, detail="Unknown campaign")
+    path = case_dir / "engineering_rca_report.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Engineering qualification not available")
+    try:
+        data = load_json_file(path)
+        if not isinstance(data, dict):
+            raise ValueError("Engineering report must be an object")
+        return data
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=500, detail="Engineering qualification could not be read") from exc
