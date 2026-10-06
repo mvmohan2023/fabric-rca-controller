@@ -741,3 +741,36 @@ Exact next action: pull correction and regenerate saved baseline sidecar,
 printing only the zero-post fact interpretation. Then inspect intent endpoints/
 corridor and raw source timestamps/counter epoch coverage; fabric adapter and
 browser/UI qualification remain pending. Full RCA milestone remains open.
+
+
+## 2026-10-05 — saved intent endpoint qualification and additive diagnostic
+
+User inspected both baseline and negative final report intent_rca objects:
+status=ok, error=None, src_leaf=None, dst_leaf=None, corridor=[], matched=[]
+and no rca_summary. Saved src/dst inputs are 10.1.1.1/10.2.2.2. Both carry
+intent_name=ecmp_degraded_member_hold_restore; the baseline name is a recorded
+metadata mismatch pending producer/configuration review.
+
+Current topology has 16 external links with IXIA peer names such as
+ix020-ares.englab.juniper.net/1 and /5. resolve_ixia_endpoint uses exact endpoint
+name lookup, not traffic IP resolution. User inventory samples show physical
+port mappings only. No verified mapping of saved IPs to IXIA ports is available;
+do not select ports by guess or reinterpret empty corridor as healthy.
+
+Added engineering_assessment.intent_path_coverage: requested and resolved
+endpoints, explicit missing/unresolved/incomplete corridor reasons, corridor
+and matched-hotspot counts, source artifact and JSON pointer, interpretation
+limits and mapping guidance. Existing source availability, legacy status=ok,
+intent outputs, CLI/UI behavior and candidate confidence are preserved.
+A resolved corridor with no hotspots is not a health verdict or proof of the
+observed traffic path. Missing schema is explicitly unassessed.
+
+Validation: 35/35 tests PASS, compilation/scoped diff check PASS. New tests
+cover unresolved successful producer output, resolved empty hotspots, missing/
+incomplete schemas, embedded final-report traceability and source preservation.
+
+Exact next action: pull and regenerate baseline engineering sidecar; print only
+engineering_assessment.intent_path_coverage. Verified traffic IP-to-port mapping
+is required before IP corridor analysis can be qualified. Continue raw timestamp/
+epoch and missing fabric artifact coverage inspection, then browser/UI checks.
+This completes the additive intent diagnostic, not full RCA qualification.

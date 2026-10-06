@@ -115,7 +115,11 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
         "evidence": serialize_evidence(evidence),
         "evidence_relevance": decisions,
         "candidates": serialize_candidates(candidates),
-        "engineering_assessment": build_engineering_assessment(evidence, candidates, availability),
+        "engineering_assessment": build_engineering_assessment(
+            evidence, candidates, availability,
+            intent_report=inputs.get("traffic_intent_rca"),
+            requested_endpoints={key: summary.get(key) for key in ("src", "dst")},
+        ),
         "limitations": [
             "Correlation does not establish event causality or a device-health verdict.",
             "Confidence describes relevant evidence diversity and traceability.",

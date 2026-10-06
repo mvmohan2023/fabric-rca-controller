@@ -13,10 +13,44 @@ from .relevance import assess_relevance
 from .conflicts import assess_aligned_conflicts
 
 
+def assess_intent_coverage(report, requested_endpoints=None):
+    """Assess explicit corridor coverage, never infer an IP-to-port mapping."""
+    if not isinstance(report, dict):
+        return {"status": "source_unavailable", "reasons": ["intent_source_unavailable"]}
+    required = ("src_leaf", "dst_leaf", "corridor")
+    reasons = []
+    if not all(key in report for key in required):
+        reasons.append("endpoint_or_corridor_fields_missing")
+    else:
+        for key in ("src_leaf", "dst_leaf"):
+            if not isinstance(report[key], str) or not report[key].strip():
+                reasons.append(key + "_unresolved")
+        corridor = report["corridor"]
+        if not isinstance(corridor, list) or not corridor:
+            reasons.append("corridor_empty_or_invalid")
+        elif any(not isinstance(row, dict) or not row.get("node") or not row.get("interface")
+                 for row in corridor):
+            reasons.append("corridor_entries_incomplete")
+    matched = report.get("matched_hotspots")
+    count = len(matched) if isinstance(matched, list) else None
+    return {
+        "status": "unassessed_path_coverage" if reasons else "resolved_corridor_reported",
+        "reasons": reasons,
+        "requested_endpoints": requested_endpoints or {},
+        "resolved_endpoints": {key: report.get(key) for key in ("src_leaf", "dst_leaf")},
+        "corridor_entry_count": len(report["corridor"]) if isinstance(report.get("corridor"), list) else None,
+        "matched_hotspot_count": count,
+        "interpretation": ("Unresolved or incomplete path coverage cannot establish absence of congestion."
+                           if reasons else "A reported corridor is available; hotspot count alone is not a health verdict or proof of an observed traffic path."),
+        "recommended_check": "Verify requested endpoint identities against topology external_links; IP inputs require an explicit verified traffic IP-to-port mapping. Do not guess endpoint ports.",
+    }
+
+
 def build_engineering_assessment(
     evidence: List[EvidenceItem],
     candidates: List[RootCauseCandidate],
     source_availability: Dict[str, Dict[str, Any]],
+    *, intent_report=None, requested_endpoints=None,
 ) -> Dict[str, Any]:
     """Describe source coverage and candidate facts without inventing causality."""
     gaps = []
@@ -37,6 +71,10 @@ def build_engineering_assessment(
                          "supporting_artifact": entry.get("path"), "recommended_check": action})
 
     indices = {id(item): index for index, item in enumerate(evidence)}
+    intent_coverage = assess_intent_coverage(intent_report, requested_endpoints)
+    intent_source = source_availability.get("traffic_intent_rca", {})
+    intent_coverage["supporting_artifact"] = intent_source.get("path")
+    intent_coverage["artifact_json_pointer"] = intent_source.get("json_pointer")
     conflicts = assess_aligned_conflicts(evidence)
     assessments = []
     for candidate in candidates:
@@ -91,6 +129,7 @@ def build_engineering_assessment(
         "source_gaps": gaps,
         "candidate_assessments": assessments,
         "aligned_conflict_assessment": conflicts,
+        "intent_path_coverage": intent_coverage,
         "limitations": ["Source coverage describes the supported adapters, not mandatory scenario coverage or a validation verdict.",
                         "Missing sources, context-only evidence and defaultable zeros are not proof of healthy behavior.",
                         "No conflict is asserted merely because observations differ across phases or sources."],
