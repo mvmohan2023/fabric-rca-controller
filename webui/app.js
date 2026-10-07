@@ -2922,6 +2922,7 @@ async function loadEngineeringQualification(runId) {
     const intent = assessment.intent_path_coverage || {};
     const conflicts = assessment.aligned_conflict_assessment || {};
     const gaps = assessment.source_gaps || [];
+    const claimChecks = assessment.ui_claim_qualification || {};
     const limits = data.limitations || [];
     const list = values => `<ul>${values.map(value => `<li>${escapeHtml(value)}</li>`).join("")}</ul>`;
     const facts = (assessment.candidate_assessments || []).flatMap(candidate =>
@@ -2933,6 +2934,9 @@ async function loadEngineeringQualification(runId) {
       ${list(intent.reasons || [])}
       <p>Conflict comparison: ${escapeHtml(conflicts.status || "not assessed")}.
       Comparable pairs: ${escapeHtml(conflicts.comparable_pair_count ?? "unknown")}.</p>
+      <h4>Legacy section qualification: ${escapeHtml(claimChecks.status || "not assessed")}</h4>
+      ${list((claimChecks.findings || []).map(finding => `${finding.section}: ${finding.interpretation} Source: ${finding.supporting_artifact || "unknown"}${finding.json_pointer || ""}`))}
+      ${list(claimChecks.limitations || [])}
       <h4>Source coverage gaps</h4>
       ${list(gaps.map(gap => `${gap.source}: ${gap.reason}. ${gap.recommended_check}`))}
       <h4>Interpretation limits</h4>${list(limits)}

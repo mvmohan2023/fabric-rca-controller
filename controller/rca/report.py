@@ -6,6 +6,8 @@ This artifact describes evidence correlation, not proven fault causality.
 
 from __future__ import annotations
 
+from .ui_qualification import qualify_ui_claims
+
 import argparse
 import json
 from collections import Counter
@@ -99,6 +101,13 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
                 "observations_normalized" if source_decisions else "no_normalized_observations"
             )
     candidates = correlate_hierarchical_by_entity(evidence, inventory=inventory)
+    assessment = build_engineering_assessment(
+        evidence, candidates, availability,
+        intent_report=inputs.get("traffic_intent_rca"),
+        requested_endpoints={key: summary.get(key) for key in ("src", "dst")},
+    )
+    assessment["ui_claim_qualification"] = qualify_ui_claims(
+        inputs.get("queue_cos_evidence"), paths.get("queue_cos_evidence"))
     return {
         "schema_version": "1.0",
         "run_id": summary.get("run_id"),
@@ -115,11 +124,7 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
         "evidence": serialize_evidence(evidence),
         "evidence_relevance": decisions,
         "candidates": serialize_candidates(candidates),
-        "engineering_assessment": build_engineering_assessment(
-            evidence, candidates, availability,
-            intent_report=inputs.get("traffic_intent_rca"),
-            requested_endpoints={key: summary.get(key) for key in ("src", "dst")},
-        ),
+        "engineering_assessment": assessment,
         "limitations": [
             "Correlation does not establish event causality or a device-health verdict.",
             "Confidence describes relevant evidence diversity and traceability.",

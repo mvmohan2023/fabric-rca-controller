@@ -806,3 +806,30 @@ baseline /engineering API, hard-refresh UI and confirm Engineering Qualification
 renders above dashboard. Do not rebuild/overwrite legacy UI artifacts.
 Verified IP-to-port mapping, counter epochs/aligned windows, fabric adapter and
 section-by-section technical review remain open; full RCA milestone not closed.
+
+
+## 2026-10-06 — qualification browser PASS and legacy section checks
+
+User service active and engineering API HTTP200 after restart readiness retry.
+Uploaded Fabric RCA UI(1).pdf verifies new qualification section above preserved
+dashboard, unresolved intent reasons, missing fabric, zero comparable pairs,
+and corrected spine2 et-0/0/33 q3 zero-post interpretation. Browser rendering
+of this additive section PASS; full technical RCA qualification remains open.
+
+Continued documented section-by-section evidence review. Added read-only
+ui_claim_qualification inside engineering_assessment, using existing loaded
+rca_ui_report.json. Selected checks flag noop execution versus fault recovery,
+ECMP insufficient/unknown/unsuccessful analysis versus convergence, and
+non-event/historical queue context versus recovery. Findings retain original
+field values and source artifact/JSON pointers; UI qualification displays these
+findings. No findings means only no selected gap detected, not healthy or full
+qualification. No legacy verdict/score/source or CLI result is rewritten.
+
+Validation: 40/40 tests PASS, Python compilation and JS syntax PASS, scoped
+diff check PASS. Tests cover all three saved-baseline gap shapes, traceability,
+input immutability, non-acceptance semantics and malformed/missing sections.
+
+Exact next action: pull and regenerate saved baseline engineering sidecar;
+print ui_claim_qualification status and finding reasons. Hard-refresh browser
+to confirm legacy section findings. Continue remaining traffic phase/path and
+counter epoch coverage qualification; no new campaign needed for this check.
