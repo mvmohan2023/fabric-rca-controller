@@ -122,7 +122,7 @@ def score_flow(row: Dict[str, Any]) -> float:
     )
 
 def normalize_for_ui(row: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    result = {
         "tx_port": row.get("tx_port"),
         "rx_port": row.get("rx_port"),
         "flow_name": row.get("flow_name"),
@@ -150,6 +150,18 @@ def normalize_for_ui(row: Dict[str, Any]) -> Dict[str, Any]:
         "rate_rx_gbps": safe_float(row.get("rate_rx_gbps")),
         "score": round(score_flow(row), 2),
     }
+
+    # Ranked comparison rows must retain the arithmetic used for their rank.
+    # Snapshot rows stay unchanged; comparison values are not counter epochs.
+    for metric in ("frames_delta", "retx", "seqerror", "message_failed", "ecn"):
+        for suffix in ("pre", "post", "increase"):
+            key = f"{metric}_{suffix}"
+            if key in row:
+                result[key] = row[key]
+    if "comparison_coverage" in row:
+        from copy import deepcopy
+        result["comparison_coverage"] = deepcopy(row["comparison_coverage"])
+    return result
 
 
 def top_n(rows: List[Dict[str, Any]], key: str, n: int = 10) -> List[Dict[str, Any]]:
@@ -188,6 +200,17 @@ def compare_pre_post(pre_rows: List[Dict[str, Any]], post_rows: List[Dict[str, A
         post = post_idx.get(key, {})
 
         row = dict(post or pre)
+        row["comparison_coverage"] = {
+            "pre_flow_present": key in pre_idx,
+            "post_flow_present": key in post_idx,
+            "metric_presence": {
+                metric: {"pre": pre.get(metric) not in (None, ""),
+                         "post": post.get(metric) not in (None, "")}
+                for metric in ("frames_delta", "retx", "seqerror", "message_failed", "ecn")
+            },
+            "limitations": ["Legacy arithmetic defaults missing values to zero; presence is not measurement validity.",
+                            "Counter reset epochs and aligned collection windows are unverified; increments alone do not establish event causality or delayed recovery."],
+        }
         row["frames_delta_pre"] = safe_int(pre.get("frames_delta"))
         row["frames_delta_post"] = safe_int(post.get("frames_delta"))
         row["frames_delta_increase"] = row["frames_delta_post"] - row["frames_delta_pre"]

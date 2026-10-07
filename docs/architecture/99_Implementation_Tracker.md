@@ -833,3 +833,29 @@ Exact next action: pull and regenerate saved baseline engineering sidecar;
 print ui_claim_qualification status and finding reasons. Hard-refresh browser
 to confirm legacy section findings. Continue remaining traffic phase/path and
 counter epoch coverage qualification; no new campaign needed for this check.
+
+
+## 2026-10-07 — RoCE ranked comparison provenance correction
+
+User saved baseline ui_claim_qualification returns review_required and all
+three expected event/ECMP/queue reasons (saved artifact validation PASS).
+RoCE victim Flow Group84 TX014/RX011/QP66 shows TX393642523/RX393995702:
+RX exceeds TX by353179, so displayed Loss353179 is a discrepancy, not proven
+lost packets. Saved top_by_delta ranks snapshot discrepancies, not increments.
+User top_by_seqerror_increase row lacks all *_pre/*_post/*_increase fields.
+
+Traced real inspector: compare_pre_post computes differences; top_n selects
+positive increases but normalize_for_ui drops comparison arithmetic. Added
+retention of explicitly present PRE/POST/increase fields for five compared
+metrics, plus additive flow/metric presence coverage. Snapshot rows unchanged;
+ranking, thresholds, legacy zero-default arithmetic, scores/verdicts unchanged.
+Missing fields are marked absent, not measured zeros. Counter-reset epochs,
+windows, validity and event causality remain unverified.
+
+Validation:43/43 tests PASS; compilation and scoped diff check PASS. New tests
+exercise ranking with retained increments, snapshot compatibility, missing
+phase coverage and input preservation. Existing local orchestrator edit excluded.
+Exact next action: pull and recompute comparison in memory from saved raw PRE/
+POST paths; print only Flow84 QP66 comparison and coverage. Do not overwrite
+legacy deep/UI artifacts. Then qualify actual increments and remaining scope/
+clock/reset limitations before asserting delayed RoCE recovery.
