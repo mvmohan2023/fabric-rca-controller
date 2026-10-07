@@ -2924,6 +2924,16 @@ async function loadEngineeringQualification(runId) {
     const gaps = assessment.source_gaps || [];
     const claimChecks = assessment.ui_claim_qualification || {};
     const limits = data.limitations || [];
+    const roce = assessment.roce_snapshot_qualification || {};
+    const roceRows = (roce.flows || []).slice(0, 10);
+    const sourceLink = phase => {
+      const path = roce.source_availability?.[phase]?.path || "";
+      const marker = "/artifacts/";
+      const start = path.indexOf(marker);
+      if (start < 0) return escapeHtml(path || "unavailable");
+      const url = "/artifacts/" + path.slice(start + marker.length).split("/").map(encodeURIComponent).join("/");
+      return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(phase.toUpperCase())} source</a>`;
+    };
     const list = values => `<ul>${values.map(value => `<li>${escapeHtml(value)}</li>`).join("")}</ul>`;
     const facts = (assessment.candidate_assessments || []).flatMap(candidate =>
       (candidate.facts || []).filter(fact => fact.phase === "delta_post" && fact.observed_value === 0)
@@ -2937,6 +2947,17 @@ async function loadEngineeringQualification(runId) {
       <h4>Legacy section qualification: ${escapeHtml(claimChecks.status || "not assessed")}</h4>
       ${list((claimChecks.findings || []).map(finding => `${finding.section}: ${finding.interpretation} Source: ${finding.supporting_artifact || "unknown"}${finding.json_pointer || ""}`))}
       ${list(claimChecks.limitations || [])}
+      <h4>RoCE snapshot qualification: ${escapeHtml(roce.status || "not assessed")}</h4>
+      <p>${sourceLink("pre")} · ${sourceLink("post")} · Flow identities: ${escapeHtml(roce.flow_count ?? "unknown")}</p>
+      ${list(roce.limitations || [])}
+      ${roceRows.length ? `<details><summary>Flow snapshot differences (first ${roceRows.length})</summary>${roceRows.map(flow => {
+        const identity = flow.flow_identity || {};
+        const coverage = flow.comparison_coverage || {};
+        return `<p><strong>${escapeHtml(identity.flow_name)}: ${escapeHtml(identity.tx_port)} → ${escapeHtml(identity.rx_port)}; QP ${escapeHtml(identity.src_qp)}/${escapeHtml(identity.dest_qp)}</strong></p>
+          ${list(Object.entries(flow.snapshot_differences || {}).map(([metric, values]) => `${metric}: PRE ${values.pre}, POST ${values.post}, difference ${values.increase}`))}
+          <p>Continuity: ${escapeHtml(coverage.counter_continuity || "unverified")}; decreases: ${escapeHtml((coverage.decreasing_counter_like_metrics || []).join(", ") || "none detected (not proof of continuity)")}</p>
+          <pre>${escapeHtml(JSON.stringify({duplicates: coverage.duplicate_coverage, timestamps: coverage.source_timestamps, metric_presence: coverage.metric_presence}, null, 2))}</pre>`;
+      }).join("")}</details>` : ""}
       <h4>Source coverage gaps</h4>
       ${list(gaps.map(gap => `${gap.source}: ${gap.reason}. ${gap.recommended_check}`))}
       <h4>Interpretation limits</h4>${list(limits)}

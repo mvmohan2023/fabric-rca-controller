@@ -7,6 +7,7 @@ This artifact describes evidence correlation, not proven fault causality.
 from __future__ import annotations
 
 from .ui_qualification import qualify_ui_claims
+from .roce_qualification import build_roce_qualification
 
 import argparse
 import json
@@ -108,6 +109,7 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
     )
     assessment["ui_claim_qualification"] = qualify_ui_claims(
         inputs.get("queue_cos_evidence"), paths.get("queue_cos_evidence"))
+    assessment["roce_snapshot_qualification"] = build_roce_qualification(case_path, files)
     return {
         "schema_version": "1.0",
         "run_id": summary.get("run_id"),

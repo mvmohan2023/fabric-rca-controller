@@ -144,7 +144,7 @@ BGP Family
 
 Current Task
 
-Engineering RCA Capability — measurement provenance retention implemented offline; lab qualification deferred during outage
+Engineering RCA Capability — RoCE sidecar/UI qualification integrated; remaining source/path/epoch qualification open
 
 Next Task
 
@@ -887,3 +887,39 @@ Exact next action: pull and repeat in-memory saved comparison, printing only
 comparison_coverage duplicate/time/decrease/continuity diagnostics. Do not
 rewrite saved raw/deep/UI artifacts. Interval increments and delayed recovery
 remain unqualified until real counter semantics/reset epochs/windows are known.
+
+
+## 2026-10-07 — RoCE sidecar and qualification UI integration
+
+User saved-run duplicate/time/decrease diagnostics match expected84 agreeing
+checked signatures each phase, original relative timestamps, message_failed
+decrease and unverified continuity: lab checkpoint PASS. User explicitly asks
+autonomous implementation without waiting for step-by-step confirmation.
+
+Added read-only controller/rca/roce_qualification.py. Engineering assessment
+roce_snapshot_qualification reads declared raw PRE/POST snapshots (or existing
+standard fallback paths) and computes comparisons in memory. It retains source
+availability/session/view fields, per-flow identity, source row indices,
+snapshot differences, duplicate/timestamp/decrease/metric presence diagnostics
+and explicit continuity/causality limits. Missing/invalid/empty artifacts remain
+insufficient coverage; legacy evidence counts/confidence/verdicts unchanged.
+No raw/deep/UI source artifacts are rebuilt or overwritten.
+
+Engineering Qualification displays RoCE status, PRE/POST artifact links, flow
+count and limits, with expandable first10 flow details. Backend retains all
+flow comparisons. Snapshot differences are not interval increments; RX>TX
+frame discrepancy is not proven loss; delayed recovery remains unqualified.
+
+Validation:49/49 tests PASS; compilation and JS syntax PASS; scoped diff check
+PASS. Integration test writes real sidecar from84-row baseline-shaped raw
+snapshots, verifies source indices, seqerror+74166, message_failed decrease and
+source byte preservation. Tests also cover missing/invalid/empty snapshots.
+Existing local stress_orchestrator.py change excluded.
+
+Exact next action: regenerate saved baseline sidecar with latest branch and
+hard-refresh UI (no service restart needed). Source fixture integration is
+complete; lab/browser validation of the new RoCE details remains pending.
+Continue autonomously on architecture-aligned items; verified traffic IP/port
+mapping, reset epochs/aligned windows, fabric evidence source qualification and
+remaining section technical review are still gates. Full project not claimed
+complete merely because qualification diagnostics are implemented.
