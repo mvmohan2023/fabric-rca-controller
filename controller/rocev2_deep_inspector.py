@@ -189,10 +189,49 @@ def build_index(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return {flow_key(r): r for r in rows}
 
 
+def _comparison_provenance(pre_group, post_group, pre, post):
+    """Describe row multiplicity and continuity gaps without changing selection."""
+    checked = ("data_frames_tx", "data_frames_rx", "frames_delta", "retx",
+               "seqerror", "message_failed", "ecn", "first_timestamp", "last_timestamp")
+    def coverage(group):
+        signatures = {json.dumps({name: row.get(name) for name in checked},
+                                 sort_keys=True, default=str) for row in group}
+        return {"row_count": len(group), "distinct_checked_value_sets": len(signatures)}
+    decreases = []
+    import math
+    for metric in ("data_frames_tx", "data_frames_rx", "retx", "seqerror", "message_failed", "ecn"):
+        left, right = pre.get(metric), post.get(metric)
+        if isinstance(left, bool) or isinstance(right, bool):
+            continue
+        try:
+            left, right = float(left), float(right)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(left) and math.isfinite(right) and right < left:
+            decreases.append(metric)
+    return {
+        "duplicate_coverage": {"pre": coverage(pre_group), "post": coverage(post_group)},
+        "selection_policy": "legacy_last_row_per_flow_key",
+        "source_timestamps": {phase: {field: row.get(field) for field in
+                              ("first_timestamp", "last_timestamp")}
+                              for phase, row in (("pre", pre), ("post", post))},
+        "timestamp_semantics": "unverified_source_fields_not_wall_clock_windows",
+        "decreasing_counter_like_metrics": decreases,
+        "counter_continuity": "unverified",
+        "interpretation": "Repeated rows are not independent observations. Agreement applies only to checked fields. Decreases flag unresolved counter semantics, resets or scope changes; they do not prove a reset or recovery.",
+    }
+
+
 def compare_pre_post(pre_rows: List[Dict[str, Any]], post_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     pre_idx = build_index(pre_rows)
     post_idx = build_index(post_rows)
 
+    groups = []
+    for rows in (pre_rows, post_rows):
+        grouped = {}
+        for source_row in rows:
+            grouped.setdefault(flow_key(source_row), []).append(source_row)
+        groups.append(grouped)
     merged: List[Dict[str, Any]] = []
 
     for key in sorted(set(pre_idx.keys()) | set(post_idx.keys())):
@@ -201,6 +240,7 @@ def compare_pre_post(pre_rows: List[Dict[str, Any]], post_rows: List[Dict[str, A
 
         row = dict(post or pre)
         row["comparison_coverage"] = {
+            **_comparison_provenance(groups[0].get(key, []), groups[1].get(key, []), pre, post),
             "pre_flow_present": key in pre_idx,
             "post_flow_present": key in post_idx,
             "metric_presence": {

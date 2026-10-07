@@ -859,3 +859,31 @@ Exact next action: pull and recompute comparison in memory from saved raw PRE/
 POST paths; print only Flow84 QP66 comparison and coverage. Do not overwrite
 legacy deep/UI artifacts. Then qualify actual increments and remaining scope/
 clock/reset limitations before asserting delayed RoCE recovery.
+
+
+## 2026-10-07 — RoCE duplicate/time/counter continuity diagnostics
+
+User recomputed Flow84 TX014/RX011 QP66 comparison: frame discrepancy
+394080->353179 (-40901), retx83->74638 (+74555), seqerror82->74248
+(+74166), message_failed12->11 (-1), ECN193616->279109 (+85493).
+All five metrics and flow present in both phases; retention lab check PASS.
+Both session1/view RoCEv2 Flow Statistics. 84 matching rows each phase agree
+on checked metric/timestamp signatures. PRE relative times00:00:00.455 to
+00:18:10.524; POST00:00:00.484 to00:18:10.433. These are not verified wall-clock
+windows; session identity does not establish counter continuity.
+
+Added read-only comparison_coverage diagnostics: row multiplicity/distinct
+checked-field sets, legacy last-row selection disclosure, original timestamps,
+explicit unverified timestamp semantics, decreasing counter-like metrics and
+unverified continuity. Repetitions are not independent evidence; agreement
+covers checked fields only. Decreases are provenance flags, not proven resets
+or recovery. Existing arithmetic, ranking, scores and verdicts preserved.
+
+Validation:46/46 tests PASS; compilation/scoped diff check PASS. New cases
+cover84 agreeing repeats, differing duplicates with unchanged last-row policy,
+source timestamp retention, negative message failure difference and invalid/
+nonfinite values. Existing local orchestrator edit excluded.
+Exact next action: pull and repeat in-memory saved comparison, printing only
+comparison_coverage duplicate/time/decrease/continuity diagnostics. Do not
+rewrite saved raw/deep/UI artifacts. Interval increments and delayed recovery
+remain unqualified until real counter semantics/reset epochs/windows are known.
