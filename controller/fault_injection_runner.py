@@ -5279,6 +5279,8 @@ def parse_args() -> argparse.Namespace:
         help="Run a named suite of scenarios in sequence.",
     )
 
+    parser.add_argument("--collect-scoped-fabric-evidence", action="store_true",
+                        help="Opt in to exact-scoped saved telemetry aggregation after a single scenario")
     parser.add_argument("--rca-run-id", help="RCA campaign run id for single-scenario mode")
     parser.add_argument("--stress-run-id", help="Optional explicit stress run id for single-scenario mode")
 
@@ -5674,6 +5676,9 @@ def parse_args() -> argparse.Namespace:
     )
 
 
+    if args.collect_scoped_fabric_evidence and args.suite:
+        parser.error("--collect-scoped-fabric-evidence currently requires --scenario; replay suite case summaries with controller.scoped_fabric_collector")
+
     if bool(args.scenario) == bool(args.suite):
         parser.error("Exactly one of --scenario or --suite must be provided")
 
@@ -5954,6 +5959,15 @@ def main() -> int:
         if os.path.exists(summary_path):
             try:
                 from controller.rca.report import write_engineering_rca_report
+
+                if args.collect_scoped_fabric_evidence:
+                    try:
+                        from controller.scoped_fabric_collector import collect_campaign_fabric
+                        scoped_path = collect_campaign_fabric(
+                            summary_path, inventory=load_telemetry_inventory(DEFAULT_INVENTORY))
+                        print(f"[SCOPED-FABRIC] written: {scoped_path}")
+                    except Exception as exc:
+                        print(f"[SCOPED-FABRIC-WARN] failed: {exc}")
 
                 engineering_rca_path = write_engineering_rca_report(
                     summary_path,

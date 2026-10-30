@@ -166,3 +166,11 @@ EVPN/VXLAN definitions are excluded from current qualification by architecture.
 
 The old Software/Platform/Scale lists above describe intended coverage rather
 than verified implementation or production qualification.
+
+
+## Offline evidence qualification — 2026-10-30
+
+Scoped fabric collector/report/UI integration has 77 passing Python regression
+cases plus 5 offline UI cases. See [offline case inventory](98_Offline_Qualification_Cases.md).
+These do not change any scenario's live qualification status. Topology is busy;
+gNMI, broader SNMP and routing/process qualification gates remain pending.

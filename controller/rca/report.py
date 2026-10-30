@@ -9,6 +9,7 @@ from __future__ import annotations
 from .ui_qualification import qualify_ui_claims
 from .roce_qualification import build_roce_qualification
 from .fabric_replay import build_fabric_replay
+from controller.scoped_fabric_collector import inspect_scoped_collection
 
 import argparse
 import json
@@ -110,6 +111,7 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
     )
     assessment["ui_claim_qualification"] = qualify_ui_claims(
         inputs.get("queue_cos_evidence"), paths.get("queue_cos_evidence"))
+    assessment["scoped_fabric_collection"] = inspect_scoped_collection(case_path, inventory=inventory)
     assessment["fabric_snapshot_replay"] = build_fabric_replay(
         case_path, files, inputs.get("root_cause_correlation"), inventory)
     assessment["roce_snapshot_qualification"] = build_roce_qualification(case_path, files)
@@ -152,6 +154,9 @@ def write_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
         section = report["engineering_assessment"].get(section_name, {})
         input_paths.update(Path(entry["path"]) for entry in
                            section.get("source_availability", {}).values() if entry.get("path"))
+    scoped_path = report["engineering_assessment"]["scoped_fabric_collection"].get("path")
+    if scoped_path:
+        input_paths.add(Path(scoped_path))
     if output in input_paths:
         raise ValueError("Engineering RCA output must not replace source evidence")
     atomic_write_json(str(output), report, indent=2, sort_keys=False)
@@ -162,7 +167,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case-summary", required=True)
     parser.add_argument("--inventory", required=True)
+    parser.add_argument("--collect-scoped-fabric", action="store_true",
+                        help="Aggregate existing telemetry into a separate, non-overwriting scoped artifact")
     args = parser.parse_args()
+    if args.collect_scoped_fabric:
+        from controller.scoped_fabric_collector import collect_campaign_fabric
+        collect_campaign_fabric(args.case_summary, inventory=_read_object(Path(args.inventory)))
     output = write_engineering_rca_report(args.case_summary, inventory=_read_object(Path(args.inventory)))
     print(output)
     return 0

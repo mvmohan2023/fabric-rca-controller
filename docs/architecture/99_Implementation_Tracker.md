@@ -144,11 +144,11 @@ BGP Family
 
 Current Task
 
-Engineering RCA Capability — RoCE sidecar/UI qualification integrated; remaining source/path/epoch qualification open
+Engineering RCA Capability — scoped collector integrated opt-in; offline regression cases expanded; lab qualification pending
 
 Next Task
 
-Qualify saved-campaign engineering assessment and raw measurement provenance when server/artifacts return; counter epoch/window semantics remain unverified
+While topology is busy, validate scoped collection on saved artifacts; remaining live gates are tracked separately. See latest checkpoint and 98_Offline_Qualification_Cases.md.
 
 ---
 
@@ -962,3 +962,43 @@ and scoped replay counts when artifacts are available; no live stress needed.
 Remaining topology-dependent gates stay pending: verified IP-to-port mapping,
 reset epochs/aligned windows, actual fabric collector source qualification and
 remaining UI/section validation. Full project completion is not claimed.
+
+
+## 2026-10-30 — offline cases and safe scoped collector integration
+
+User requested implementation of all feasible test cases while topology is
+busy. Stayed within current engineering RCA/evidence scope; no live device,
+traffic or stress commands executed. Existing local stress_orchestrator.py
+edit remains untouched and excluded.
+
+Implemented shared exact device/interface scope and a new offline collector,
+controller/scoped_fabric_collector.py. Legacy collector API/output preserved.
+New artifact fabric_evidence_scoped.json aggregates explicit saved phase files,
+root-correlation targets, counts, original provenance and JSON pointers.
+Device/interface prefix/channel conflicts and ambiguous inventory aliases are
+excluded. Input/inventory SHA256 fingerprints support stale detection. Existing
+artifact content is never replaced; unchanged repeat is idempotent.
+
+Integration: report CLI --collect-scoped-fabric; single-scenario runner opt-in
+--collect-scoped-fabric-evidence after final UI refresh. Default remains off;
+unsupported suite opt-in rejected explicitly. Collection errors are isolated
+from legacy runner verdict/exit semantics. Sidecar/UI expose supplemental
+collection coverage without inflating independent evidence, normalized counts,
+candidate confidence or rewriting original fabric/RCA/UI artifacts.
+
+Validation:76/77 Python tests and5/5 offline JS UI cases PASS, touched Python
+modules compile and JS syntax PASS, scoped diff check PASS. New coverage:
+identity collisions/ambiguity, zero/provenance retention, anomaly identity,
+limits/full counts, malformed inputs, missing phases, no-overwrite/idempotence,
+fingerprints/staleness, CLI/report integration and legacy preservation, runner
+option compatibility, UI escaping/unavailable source/stale run responses.
+Parser cases execute actual parser bodies isolated from hardware imports;
+UI cases use the actual renderer in an offline DOM harness, not a live browser.
+Detailed inventory/commands:98_Offline_Qualification_Cases.md.
+
+Exact next action: when saved artifacts are accessible, use report CLI with
+--collect-scoped-fabric on baseline/negative campaigns and review compact
+coverage counts/freshness; this does not require a free topology. New live
+collection, clock/reset validation, IP-to-port/corridor proof and scenario
+qualifications remain pending. This checkpoint completes feasible offline
+contracts for scoped collection, not the entire scenario backlog/project.
