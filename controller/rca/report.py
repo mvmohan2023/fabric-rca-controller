@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .ui_qualification import qualify_ui_claims
 from .roce_qualification import build_roce_qualification
+from .fabric_replay import build_fabric_replay
 
 import argparse
 import json
@@ -109,6 +110,8 @@ def build_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
     )
     assessment["ui_claim_qualification"] = qualify_ui_claims(
         inputs.get("queue_cos_evidence"), paths.get("queue_cos_evidence"))
+    assessment["fabric_snapshot_replay"] = build_fabric_replay(
+        case_path, files, inputs.get("root_cause_correlation"), inventory)
     assessment["roce_snapshot_qualification"] = build_roce_qualification(case_path, files)
     return {
         "schema_version": "1.0",
@@ -145,6 +148,10 @@ def write_engineering_rca_report(case_summary_path: str, *, inventory: Dict[str,
         raise ValueError("Engineering RCA output must not replace the case summary")
     report = build_engineering_rca_report(str(case_path), inventory=inventory)
     input_paths = {Path(entry["path"]) for entry in report["source_availability"].values()}
+    for section_name in ("roce_snapshot_qualification", "fabric_snapshot_replay"):
+        section = report["engineering_assessment"].get(section_name, {})
+        input_paths.update(Path(entry["path"]) for entry in
+                           section.get("source_availability", {}).values() if entry.get("path"))
     if output in input_paths:
         raise ValueError("Engineering RCA output must not replace source evidence")
     atomic_write_json(str(output), report, indent=2, sort_keys=False)

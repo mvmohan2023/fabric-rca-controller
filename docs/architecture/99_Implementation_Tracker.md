@@ -923,3 +923,42 @@ Continue autonomously on architecture-aligned items; verified traffic IP/port
 mapping, reset epochs/aligned windows, fabric evidence source qualification and
 remaining section technical review are still gates. Full project not claimed
 complete merely because qualification diagnostics are implemented.
+
+
+## 2026-10-30 — topology busy; offline scoped fabric telemetry replay
+
+Resumed from branch644c938 after reading tracker/status/catalog and inspecting
+actual producer code. User says topology is not free: no lab collection,
+stress, device commands or live qualification attempted. Existing local
+stress_orchestrator.py edit preserved and excluded.
+
+Producer finding: fabric_evidence_collector.py exists but no invocation found
+in run_rca_case.py/fault_injection_runner.py. Legacy snapshot matcher keys by
+interface and uses substring match without device filtering, so wiring that
+matcher automatically could mix nodes or interface/channel identities.
+
+Implemented additive engineering_assessment.fabric_snapshot_replay from
+explicit saved pre/running/post_telemetry inputs and root-correlation target
+interfaces. Exact device/interface scope uses inventory aliases, rejects
+ambiguous names and conflicting record identities, preserves recorded zeros,
+metric/queue labels/provenance and source JSON pointers. Full match counts
+are retained with displayed records capped50/interface/phase. Missing/invalid/
+undeclared phase files remain coverage gaps. UI qualification exposes derived
+coverage counts and limits. This is a replay of existing telemetry, not a new
+collector/domain, independent corroboration or recovered fabric artifact.
+Original fabric source stays missing; legacy evidence/confidence unchanged.
+Sidecar overwrite guard now includes supplemental RoCE/replay source paths.
+
+Validation:55/55 offline tests PASS; Python compilation, JS syntax and scoped
+diff check PASS. Tests cover cross-device/interface-prefix/channel collisions,
+ambiguous aliases, preserved zeros/traceability/count limits, invalid inputs,
+source byte preservation, legacy missing-fabric status and output/input collision.
+No live topology is required for this implementation; real producer collection
+and independent fabric-source qualification remain open.
+
+Current task: offline engineering evidence qualification while topology busy.
+Exact next action: inspect saved case files for declared PRE/RUNNING/POST paths
+and scoped replay counts when artifacts are available; no live stress needed.
+Remaining topology-dependent gates stay pending: verified IP-to-port mapping,
+reset epochs/aligned windows, actual fabric collector source qualification and
+remaining UI/section validation. Full project completion is not claimed.

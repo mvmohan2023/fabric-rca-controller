@@ -2925,6 +2925,7 @@ async function loadEngineeringQualification(runId) {
     const claimChecks = assessment.ui_claim_qualification || {};
     const limits = data.limitations || [];
     const roce = assessment.roce_snapshot_qualification || {};
+    const fabricReplay = assessment.fabric_snapshot_replay || {};
     const roceRows = (roce.flows || []).slice(0, 10);
     const sourceLink = phase => {
       const path = roce.source_availability?.[phase]?.path || "";
@@ -2958,6 +2959,10 @@ async function loadEngineeringQualification(runId) {
           <p>Continuity: ${escapeHtml(coverage.counter_continuity || "unverified")}; decreases: ${escapeHtml((coverage.decreasing_counter_like_metrics || []).join(", ") || "none detected (not proof of continuity)")}</p>
           <pre>${escapeHtml(JSON.stringify({duplicates: coverage.duplicate_coverage, timestamps: coverage.source_timestamps, metric_presence: coverage.metric_presence}, null, 2))}</pre>`;
       }).join("")}</details>` : ""}
+      <h4>Derived fabric snapshot coverage: ${escapeHtml(fabricReplay.status || "not assessed")}</h4>
+      <p>Targets: ${escapeHtml(fabricReplay.target_count ?? "unknown")}; matching records: ${escapeHtml(fabricReplay.matched_record_count ?? "unknown")}.</p>
+      ${list(fabricReplay.limitations || [])}
+      ${list((fabricReplay.interfaces || []).map(row => `${row.device} / ${row.interface}: ` + Object.entries(row.phases || {}).map(([phase, coverage]) => `${phase} ${coverage.total_records} records`).join(", ")))}
       <h4>Source coverage gaps</h4>
       ${list(gaps.map(gap => `${gap.source}: ${gap.reason}. ${gap.recommended_check}`))}
       <h4>Interpretation limits</h4>${list(limits)}
